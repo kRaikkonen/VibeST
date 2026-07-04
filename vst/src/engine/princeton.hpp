@@ -537,6 +537,7 @@ public:
         iPlates_ = 2 * idleMa * 1e-3;
         // OT winding capacitance + leakage one-pole (20 kHz)
         Cw_ = 500e-12;
+        gcw_ = (Cw_ / T_) / (1.0 + Rw_ * Cw_ / T_);   // damped Cw conductance
         double wl = 2 * kPi * 20e3;
         lkB_ = wl * T_ / (2.0 + wl * T_);
         lkA_ = (2.0 - wl * T_) / (2.0 + wl * T_);
@@ -545,6 +546,7 @@ public:
     double vbias() const { return vbias_; }
     double iPlates() const { return iPlates_; }
     double iScreens() const { return iScreens_; }
+    void setRw(double rw) { Rw_ = rw; gcw_ = (Cw_ / T_) / (1.0 + Rw_ * Cw_ / T_); }
 
     double step(double vg1ac, double vg2ac, double vA, double vB,
                 double biasMod = 0.0) {
@@ -570,7 +572,7 @@ public:
         };
         const double core1 = coreOf(g1), core2 = coreOf(g2);
         const double gLin = T_ / (2 * Lm_) + geq_ / (4 * m_ * m_)
-                            + 2 * Cw_ / T_;
+                            + gcw_;   // Cw: series-Rw-damped (see members)
         auto Fres = [&](double v, double& dF) {
             double vp1 = std::max(vA - 0.5 * v, 0.5);
             double vp2 = std::max(vA + 0.5 * v, 0.5);
@@ -583,7 +585,7 @@ public:
             dF = -0.5 * da1 - 0.5 * da2 - gLin;
             double iLn = iL_ + (T_ / (2 * Lm_)) * (v + vaaOld);
             double is = geq_ * v / (2 * m_) + ih0;
-            double iCw = (2 * Cw_ / T_) * (v - vaaOld) - iCwPrev_;
+            double iCw = gcw_ * (v - vCwPrev_);   // series-Rw-damped Cw branch
             return (i1_ - i2_) - iLn - is / (2 * m_) - iCw;
         };
         for (int it = 0; it < 60; ++it) {
@@ -607,7 +609,7 @@ public:
             tube_.currents(g2, vB, std::max(vA + 0.5 * v, 0.5), i2, s2);
             double iLn = iL_ + (T_ / (2 * Lm_)) * (v + vaaOld);
             double is = geq_ * v / (2 * m_) + ih0;
-            double iCw = (2 * Cw_ / T_) * (v - vaaOld) - iCwPrev_;
+            double iCw = gcw_ * (v - vCwPrev_);   // series-Rw-damped Cw branch
             return (i1 - i2) - iLn - is / (2 * m_) - iCw;
         };
         for (int it = 0; it < 60; ++it) {
@@ -625,7 +627,12 @@ public:
         tube_.currents(g2, vB, std::max(vA + 0.5 * vaa, 0.5), i2, s2);
 #endif
         iL_ += (T_ / (2 * Lm_)) * (vaa + vaaOld);
-        iCwPrev_ = (2 * Cw_ / T_) * (vaa - vaaOld) - iCwPrev_;
+        // advance the damped Cw branch: cap voltage = node V minus the Rw drop.
+        // (Replaces the old undamped trapezoidal Cw whose -iCwPrev_ memory term
+        // self-oscillated at idle ~7 kHz / 0.18 RMS on ZERO input — measured
+        // against the real-amp NAM, which is silent. A real OT winding cap is
+        // damped by winding R + core loss; this series Rw restores that.)
+        vCwPrev_ = vaa - Rw_ * (gcw_ * (vaa - vCwPrev_));
         double vs = vaa / (2 * m_);
         double b1 = vs + c1;
         spk_[0] = Ainv_[0][0] * b1 + Ainv_[0][1] * c2 + Ainv_[0][2] * c3;
@@ -665,6 +672,12 @@ private:
     double vbias_, Cw_;
     double spk_[3] = {0, 0, 0}, vsPrev_ = 0;
     double iL_ = 0, iCwPrev_ = 0, vaa_ = 0;
+    // OT winding capacitance is a SERIES Rw-Cw branch (Rw = the winding's HF
+    // series resistance). Rw damps the Cw + leakage/reflected-L tank; without
+    // it the parasitic Cw self-oscillated at idle (~7 kHz). gcw_ is the damped
+    // backward-Euler conductance; vCwPrev_ is the cap voltage (smooth, so no
+    // Nyquist ring). Rw sized ~ Cw's reactance at the resonance for Q<1.
+    double Rw_ = 33e3, gcw_ = 0.0, vCwPrev_ = 0.0;
     double iPlates_ = 0, iScreens_ = 0;
     double lkB_, lkA_, lkX1_ = 0, lkY1_ = 0;
     double vbSup_ = 400.0, vpSup_ = 410.0;
@@ -911,6 +924,7 @@ public:
     double v1aBlock() const { return v1a_.vBlock(); }   // debug: blocking bias
     double v3bBlock() const { return v3b_.vBlock(); }
     void enableGridBlock(bool on) { v1a_.gridBlockOn(on); v3b_.gridBlockOn(on); }
+    void setOtDamp(double rw) { power_.setRw(rw); }   // OT Cw damping (anti-osc)
     void setFbCutoff(double fc) { fbA_ = 2.0*kPi*fc / (fs_ + 2.0*kPi*fc); }
     void setTremolo(double speed, double intensity) {
         c_.tremSpeed = speed; c_.tremIntensity = intensity;

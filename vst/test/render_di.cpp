@@ -147,6 +147,8 @@ int main(int argc,char**argv){
     eng.apply(c);
     if(nocab)eng.bypassCab(true);
     if(nfb>0)eng.amp.setFbCutoff(nfb);
+    double otd=getf("otdamp",-1);
+    if(otd>=0){ if(ampKind==1)eng.plexiAmp.setOtDamp(otd); else eng.amp.setOtDamp(otd); }
     if(!grid)eng.amp.enableGridBlock(false);
     if(!cabir)eng.forceNoIR();
     if(ampKind==1)eng.plexiAmp.setNfb(plexinfb);

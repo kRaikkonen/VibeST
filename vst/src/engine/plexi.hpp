@@ -113,6 +113,7 @@ public:
     void setGain(double g) { gain_ = g; }
     void setMaster(double m) { master_ = m; }
     void setNfb(double s) { nfbScale_ = s; }   // LTP reference-grid feedback
+    void setOtDamp(double rw) { power_.setRw(rw); }   // OT Cw damping (anti-osc)
     double piBias() const { return pi_.vkBias(); }   // debug: LTP cathode V
     void setTone(double t, double b, double m) { tone_.rebuild(fs_, t, b, m); }
     // Presence: on the real amp a 22k pot + 0.1u in the NFB tail shunts HF
