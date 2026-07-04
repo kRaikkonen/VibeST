@@ -193,6 +193,8 @@ struct Engine {
         cabConv.init(ir, kChunk48);
         useCabIr = true;
     }
+    void forceNoIR() { useCabIr = false; }   // A/B: fall back to biquad voicing
+    void bypassCab(bool b) { cabBypass_ = b; }   // head-to-head: no cab at all
 
     void applySlot(od1::Pedal& od, pedals::Pedal& fx, int kind, int oldKind,
                    double drive, double tone, double level) {
@@ -344,7 +346,9 @@ struct Engine {
             for (int i = 0; i < kChunk48; ++i) y48[i] = delay_.process(y48[i]);
 
         // ---- cab (IR or synthetic voicing) ---------------------------------
-        if (useCabIr) {
+        if (cabBypass_) {
+            // head-to-head vs a NAM: no cab at all, raw power-amp output
+        } else if (useCabIr) {
             double yc[kChunk48];
             cabConv.process(y48, yc);
             std::memcpy(y48, yc, sizeof(y48));
@@ -388,6 +392,7 @@ struct Engine {
     bool tankBypass = false;
     bool useCabIr = false;
     bool userCabIr_ = false;    // ctor was handed an explicit cab IR override
+    bool cabBypass_ = false;    // head-to-head vs NAM: skip the cab entirely
     dsp::Up2 odUp1, odUp2, odUp3;      // 48->96->192->384 into the OD-1
     dsp::Down2 odDn1, odDn2, odDn3;    // 384->192->96->48 out of the OD-1
     dsp::Up2 ampUp;                    // 48->96 amp input (HQ, OD-1 off)

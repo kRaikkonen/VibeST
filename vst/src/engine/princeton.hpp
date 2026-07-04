@@ -116,6 +116,7 @@ public:
     void setGridBlock(double Rg, double Cin, double Rgk) {
         Rg_ = Rg; Cin_ = Cin; Rgk_ = Rgk; gblock_ = true;
     }
+    void gridBlockOn(bool b) { gblock_ = b; }   // A/B toggle (bench)
 
     double step(double vg, double B = -1.0) {
         if (B < 0.0) B = B_;
@@ -909,6 +910,7 @@ public:
     void setNfb(double scale) { nfbScale_ = scale; }  // 0 = open loop
     double v1aBlock() const { return v1a_.vBlock(); }   // debug: blocking bias
     double v3bBlock() const { return v3b_.vBlock(); }
+    void enableGridBlock(bool on) { v1a_.gridBlockOn(on); v3b_.gridBlockOn(on); }
     void setFbCutoff(double fc) { fbA_ = 2.0*kPi*fc / (fs_ + 2.0*kPi*fc); }
     void setTremolo(double speed, double intensity) {
         c_.tremSpeed = speed; c_.tremIntensity = intensity;
