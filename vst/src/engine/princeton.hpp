@@ -104,9 +104,22 @@ public:
 
     double nfb = 0.0;                    // extra cathode reference (V3B)
     double ikPrev() const { return ikPrev_; }
+    double vBlock() const { return vBlock_; }   // debug: blocking-bias state
+
+    // Grid conduction / blocking distortion. When a stage is slammed the grid
+    // swings above the cathode and the grid-cathode gap conducts like a diode,
+    // rectifying charge onto the input coupling cap (Cin) through the grid
+    // stopper (Rgk). That charge biases the grid negative (vBlock_), pushing the
+    // tube toward cutoff; it bleeds back through the grid-leak Rg with a slow
+    // ~Rg*Cin time constant -> the note "spits"/gates on a hard transient then
+    // recovers. Off by default (validated stages untouched); enable per stage.
+    void setGridBlock(double Rg, double Cin, double Rgk) {
+        Rg_ = Rg; Cin_ = Cin; Rgk_ = Rgk; gblock_ = true;
+    }
 
     double step(double vg, double B = -1.0) {
         if (B < 0.0) B = B_;
+        if (gblock_) vg -= vBlock_;   // grid pushed negative by rectified charge
         double vp = vp_, vk = vk_;
 #ifdef PA_FAST_JACOBIAN
         // realtime fast path: analytic Jacobian + relaxed tolerance.
@@ -169,6 +182,16 @@ public:
             vck_ = (vck_ * (1.0 - ak) + ak * Rk_ * (ip + ikPrev_)) / (1.0 + ak);
         }
         ikPrev_ = ip;
+        if (gblock_) {
+            // grid conducts when the (already blocking-shifted) grid rises
+            // above the cathode; that current charges Cin fast (through Rgk)
+            // and bleeds off slowly through Rg -> fast-attack/slow-release
+            // negative bias = blocking distortion. Semi-implicit: vBlock_ is a
+            // slow state (ms), so lagging it one sample is accurate & stable.
+            double igk = (vg - vk) > 0.0 ? (vg - vk) / Rgk_ : 0.0;
+            vBlock_ += T_ * (igk / Cin_ - vBlock_ / (Rg_ * Cin_));
+            vBlock_ = std::clamp(vBlock_, 0.0, 40.0);
+        }
         double vo2;
         if (Cc_ > 0.0) {
             vo2 = RL_ * iC;
@@ -212,6 +235,9 @@ private:
     Triode tube_;
     double T_, B_, Rp_, Rk_, Ck_, Cc_, RL_;
     double vck_ = 0, ikPrev_ = 0, q_ = 0, iCPrev_ = 0, vp_ = 0, vk_ = 0;
+    // grid conduction / blocking distortion (off unless setGridBlock called)
+    bool gblock_ = false;
+    double Rg_ = 1e6, Cin_ = 0.022e-6, Rgk_ = 1.5e3, vBlock_ = 0.0;
 };
 
 // ---- cathodyne phase inverter ---------------------------------------------------
@@ -753,6 +779,11 @@ public:
         // actually oscillate — a per-sample implicit solve would cost 2-3x
         // for no benefit any measurement can find.
         setFbCutoff(8000.0);
+        // grid conduction / blocking on the stages that actually get slammed:
+        // V1A (input, hit hardest by the front pedals) and V3B (post-reverb
+        // recovery driving the PI). ~real 12AX7 grid-leak / coupling values.
+        v1a_.setGridBlock(1e6, 0.022e-6, 1.5e3);
+        v3b_.setGridBlock(1e6, 0.022e-6, 1.5e3);
     }
 
     // live control changes (call between blocks)
@@ -768,6 +799,8 @@ public:
     void setReverb(double r) { c_.reverb = r; }
     void setTankReturn(double k) { tankRetK_ = k; }   // calibration hook
     void setNfb(double scale) { nfbScale_ = scale; }  // 0 = open loop
+    double v1aBlock() const { return v1a_.vBlock(); }   // debug: blocking bias
+    double v3bBlock() const { return v3b_.vBlock(); }
     void setFbCutoff(double fc) { fbA_ = 2.0*kPi*fc / (fs_ + 2.0*kPi*fc); }
     void setTremolo(double speed, double intensity) {
         c_.tremSpeed = speed; c_.tremIntensity = intensity;

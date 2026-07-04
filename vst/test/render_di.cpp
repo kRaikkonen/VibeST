@@ -132,10 +132,14 @@ int main(int argc, char** argv) {
     while (in.size() % pa::kChunk48) in.push_back(0.0f);
     std::vector<float> L, R; L.reserve(in.size()); R.reserve(in.size());
     float cL[pa::kChunk48], cR[pa::kChunk48];
+    double blk1=0, blk3=0;
     for (size_t i=0;i+pa::kChunk48<=in.size(); i+=pa::kChunk48) {
         eng.processChunk(&in[i], cL, cR);
+        blk1 = std::max(blk1, eng.amp.v1aBlock());
+        blk3 = std::max(blk3, eng.amp.v3bBlock());
         for (int j=0;j<pa::kChunk48;++j){ L.push_back(cL[j]); R.push_back(cR[j]); }
     }
+    std::printf("grid-block bias peak: V1A %.3f V  V3B %.3f V (0 = never conducted)\n", blk1, blk3);
     metrics("out(L)", L, 48000);
     writeWavF32Stereo(argv[2], L, R, 48000);
     std::printf("wrote %s: %zu frames stereo @ 48000 Hz\n", argv[2], L.size());
