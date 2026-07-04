@@ -59,6 +59,18 @@
 
 **结论(完全自洽)**:head 太亮 + cab 太暗,两个错**部分互相抵消**所以"能出声",但都不对,不抵消的地方就是 fizz/发硬/发薄。**这就是"一坨屎"的量化答案。**
 
+## ⚠️ 方法论大修正(2026-07-05 更深夜):DI-Welch 法在骗人,改用干净纯音探针
+
+之前用"DI 实弹的 Welch 平均谱"对比 head,得出"我的 head 4-5kHz 太亮、鼓包"——**全错**。DI 是宽带+有瞬态,我的 head 对它的失真 + 数值杂散尖刺被 Welch **糊成了一个假的"亮包"**,我追了几十轮鬼影、还往"压暗"方向调(otbw 下压),方向完全反了。
+
+**正解:干净多音探针**(`gen_probe.py` 各频率低电平纯音 → 在每个音自己的频率测增益,`measure_probe.py`/`head_probe_cmp.py`;NAM 侧用 `nam_probe.py`)。这才是 NAM 该有的测法。真相(`renders/head_probe.png`):
+- **真 Princeton head**:平滑,高频 **+5dB presence 上扬**。
+- **我的 head**:2-5k **滚降(偏暗,-4~-18dB)**、坑坑洼洼、**6000Hz 一根 +25dB 数值尖刺**、250Hz 低频 junk。
+
+**即:我的 head 偏暗 + 缺 presence + 有杂散尖刺/低频 junk,不是太亮。** 而且证实 v1a **不失真(THD 0% 到 0.7V)、不谐振**(线性响应温和滚降)——之前"v1a +47dB@4800 谐振"是 DI-Welch 噪声地板伪影。**教训(第 N 次):验证音频必须用干净可控激励在被测频率上直接测,别用宽带实弹的平均谱去糊。**
+
+新方向:①灭掉杂散尖刺(6k 等,疑似轻阻尼数值谐振)②补 3-8k presence(我的前级 HF 滚降比真机多)③修低频 junk。head_match.py(DI-Welch)弃用,改 head_probe_cmp.py。
+
 ## 头拟合迭代(2026-07-05 深夜,细分辨率谱 + 逐级探针)
 
 工具:`head_match.py`(叠加 输入DI/NAM/我的,1/24 倍频程)、`tap_scan.py` + amp `setTapSel` 逐级探针、render_di 的 `flatload/otbw/nfbscale/otdamp/tapsel` 旗标(全默认关,不动出厂)。
