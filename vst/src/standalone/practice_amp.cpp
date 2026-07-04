@@ -76,7 +76,7 @@ int main(int argc, char** argv) {
             bool ec = mode == 1;
             pa::Engine e(pa::springTankIr(ec ? 48000.0 : 96000.0), {}, ec);
             const int chunks = 48000 * 2 / pa::kChunk48;
-            std::vector<float> in(pa::kChunk48), out(pa::kChunk48);
+            std::vector<float> in(pa::kChunk48), oL(pa::kChunk48), oR(pa::kChunk48);
             double acc = 0.0;
             auto t0 = std::chrono::high_resolution_clock::now();
             for (int cix = 0; cix < chunks; ++cix) {
@@ -86,8 +86,8 @@ int main(int argc, char** argv) {
                         0.6 * std::sin(2 * 3.14159265358979 * 220.0 * tt)
                         * std::exp(-1.5 * tt));
                 }
-                e.processChunk(in.data(), out.data());
-                for (int i = 0; i < pa::kChunk48; ++i) acc += out[i] * out[i];
+                e.processChunk(in.data(), oL.data(), oR.data());
+                for (int i = 0; i < pa::kChunk48; ++i) acc += oL[i] * oL[i];
             }
             auto t1 = std::chrono::high_resolution_clock::now();
             double sec = std::chrono::duration<double>(t1 - t0).count();

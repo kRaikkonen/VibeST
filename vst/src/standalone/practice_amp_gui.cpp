@@ -19,7 +19,9 @@ constexpr int IDC_IN = 100, IDC_OUT = 101, IDC_EXCL = 102, IDC_START = 103,
               IDC_ODON = 104, IDC_CAB = 105, IDC_STATUS = 106, IDC_BUF = 107,
               IDC_BACKEND = 108, IDC_INCH = 109, IDC_ECO = 110,
               IDC_PEDAL = 111, IDC_AMP = 112, IDC_PEDALB = 113,
-              IDC_ODB = 114, IDC_CABKIND = 115;
+              IDC_ODB = 114, IDC_CABKIND = 115, IDC_DELAYON = 116,
+              IDC_EQON = 117, IDC_HPFON = 118, IDC_LPFON = 119,
+              IDC_EQ0 = 200;              // 200..208 = 9 EQ faders
 constexpr int IDC_SLIDER0 = 120;   // 10 sliders: 120..129
 constexpr int IDC_VAL0 = 140;      // value labels: 140..149
 
@@ -27,7 +29,7 @@ struct Param {
     const wchar_t* name;
     double lo, hi, def;
 };
-const Param kParams[14] = {
+const Param kParams[19] = {
     {L"Drive", 0, 1, 0.6},        {L"Level", 0, 1, 0.35},
     {L"Volume", 0, 1, 0.4},       {L"Treble", 0, 1, 0.55},
     {L"Bass", 0, 1, 0.5},         {L"Reverb", 0, 1, 0.25},
@@ -37,7 +39,13 @@ const Param kParams[14] = {
     {L"Drive", 0, 1, 0.5},        // 11: slot B drive
     {L"Tone", 0, 1, 0.5},         // 12: slot B tone
     {L"Level", 0, 1, 0.35},       // 13: slot B level
+    {L"Time ms", 20, 1000, 400},  // 14: delay time
+    {L"Feedbk", 0, 0.9, 0.35},    // 15: delay feedback
+    {L"Mix", 0, 1, 0.25},         // 16: delay mix
+    {L"Room", 0, 1, 0.25},        // 17: room mic amount
+    {L"Width", 0, 1, 0.8},        // 18: room mic width
 };
+constexpr int NP = 19;
 // amp-dependent labels for sliders 2..7
 const wchar_t* kAmpLabels[2][6] = {
     {L"Volume", L"Treble", L"Bass", L"Reverb", L"Trem Speed",
@@ -52,9 +60,10 @@ bool gRunning = false;
 ma_device_info* gPlayback = nullptr;
 ma_device_info* gCapture = nullptr;
 ma_uint32 gNPlayback = 0, gNCapture = 0;
-HWND gSliders[14], gVals[14], gParamLbl[14], gStatus, gInCombo, gOutCombo,
+HWND gSliders[NP], gVals[NP], gParamLbl[NP], gStatus, gInCombo, gOutCombo,
      gExcl, gOdOn, gOdB, gStartBtn, gBufCombo, gBackend, gInCh, gEco,
-     gCabLabel, gPedalKind, gPedalKindB, gAmpKind, gCabKind;
+     gCabLabel, gPedalKind, gPedalKindB, gAmpKind, gCabKind,
+     gDelayOn, gEqOn, gHpfOn, gLpfOn, gEqFader[9], gEqVal[9];
 HFONT gFont;
 std::wstring gStatusBase;
 const int kBufSizes[4] = {64, 128, 256, 512};
@@ -118,6 +127,19 @@ void applyControls() {
     if (c.ampKind < 0) c.ampKind = 0;
     c.cabKind = static_cast<int>(SendMessageW(gCabKind, CB_GETCURSEL, 0, 0));
     if (c.cabKind < 0) c.cabKind = 0;
+    c.delayOn = SendMessageW(gDelayOn, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    c.delayMs = sliderValue(14);
+    c.delayFb = sliderValue(15);
+    c.delayMix = sliderValue(16);
+    c.roomAmount = sliderValue(17);
+    c.roomWidth = sliderValue(18);
+    c.eqOn = SendMessageW(gEqOn, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    c.eqHpfOn = SendMessageW(gHpfOn, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    c.eqLpfOn = SendMessageW(gLpfOn, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    for (int b = 0; b < 9; ++b) {   // faders: 0..100 -> -12..+12 dB
+        int pos = static_cast<int>(SendMessageW(gEqFader[b], TBM_GETPOS, 0, 0));
+        c.eqDb[b] = (50 - pos) * 12.0 / 50.0;   // top = +12, mid = 0
+    }
     // Heavy tone-stack rebuild is done here OUTSIDE the audio lock (it is
     // lock-free / double-buffered), so frantic pot dragging can't starve the
     // audio callback. The rest of apply() is a handful of cheap assignments.
@@ -369,6 +391,50 @@ void buildUi(HWND hwnd) {
     mk(hwnd, L"BUTTON", L"LEVELS", BS_GROUPBOX, 8, 704, 436, 92, 0);
     slider(8, 22, 726, 224);   // Input Trim
     slider(9, 22, 758, 224);   // Master
+
+    // ================= RIGHT COLUMN: post-amp FX =========================
+    int rx = 456;
+    mk(hwnd, L"BUTTON", L"BOSS DIGITAL DELAY  (amp → cab)",
+       BS_GROUPBOX, rx, 186, 436, 158, 0);
+    gDelayOn = mk(hwnd, L"BUTTON", L"Engage", BS_AUTOCHECKBOX,
+                  rx + 14, 208, 120, 20, IDC_DELAYON);
+    slider(14, rx + 14, 234, 190);   // Time ms
+    slider(15, rx + 14, 264, 190);   // Feedback
+    slider(16, rx + 14, 294, 190);   // Mix
+
+    mk(hwnd, L"BUTTON", L"STUDIO ROOM MIC  (stereo)",
+       BS_GROUPBOX, rx, 352, 436, 96, 0);
+    slider(17, rx + 14, 374, 190);   // Room amount
+    slider(18, rx + 14, 404, 190);   // Width
+
+    // ---- 9-band GRAPHIC EQ (the reference pedal) -------------------------
+    mk(hwnd, L"BUTTON", L"GRAPHIC EQ  (stereo, signal tail)",
+       BS_GROUPBOX, rx, 456, 436, 336, 0);
+    gEqOn = mk(hwnd, L"BUTTON", L"On", BS_AUTOCHECKBOX,
+               rx + 14, 476, 50, 20, IDC_EQON);
+    SendMessageW(gEqOn, BM_SETCHECK, BST_CHECKED, 0);
+    gHpfOn = mk(hwnd, L"BUTTON", L"HPF", BS_AUTOCHECKBOX,
+                rx + 300, 476, 56, 20, IDC_HPFON);
+    gLpfOn = mk(hwnd, L"BUTTON", L"LPF", BS_AUTOCHECKBOX,
+                rx + 366, 476, 56, 20, IDC_LPFON);
+    const wchar_t* efn[9] = {L"75", L"150", L"250", L"400", L"800",
+                             L"1.5k", L"4.5k", L"8k", L"12k"};
+    double eqDef[9] = {0, 0, 0, 0, 0, 0, 0, 0, -0.4};
+    for (int b = 0; b < 9; ++b) {
+        int x = rx + 20 + b * 46;
+        gEqVal[b] = mk(hwnd, L"STATIC", L"0.0", SS_CENTER, x - 6, 502, 44, 16,
+                       0);
+        gEqFader[b] = mk(hwnd, TRACKBAR_CLASSW, nullptr,
+                         TBS_VERT | TBS_AUTOTICKS | TBS_BOTH, x, 522, 30, 220,
+                         IDC_EQ0 + b);
+        SendMessageW(gEqFader[b], TBM_SETRANGE, TRUE, MAKELPARAM(0, 100));
+        SendMessageW(gEqFader[b], TBM_SETPOS, TRUE,
+                     50 - static_cast<int>(eqDef[b] * 50.0 / 12.0));
+        mk(hwnd, L"STATIC", efn[b], SS_CENTER, x - 6, 748, 44, 16, 0);
+        wchar_t v[8];
+        swprintf(v, 8, L"%+.1f", eqDef[b]);
+        SetWindowTextW(gEqVal[b], v);
+    }
 }
 
 void relabelAmp() {
@@ -401,9 +467,20 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         case WM_HSCROLL:
-            for (int i = 0; i < 14; ++i)
+            for (int i = 0; i < NP; ++i)
                 if (reinterpret_cast<HWND>(lp) == gSliders[i])
                     updateValueLabel(i);
+            applyControls();
+            return 0;
+        case WM_VSCROLL:   // the 9 vertical EQ faders
+            for (int b = 0; b < 9; ++b)
+                if (reinterpret_cast<HWND>(lp) == gEqFader[b]) {
+                    int pos = static_cast<int>(
+                        SendMessageW(gEqFader[b], TBM_GETPOS, 0, 0));
+                    wchar_t v[8];
+                    swprintf(v, 8, L"%+.1f", (50 - pos) * 12.0 / 50.0);
+                    SetWindowTextW(gEqVal[b], v);
+                }
             applyControls();
             return 0;
         case WM_COMMAND:
@@ -411,7 +488,11 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 case IDC_START: startStop(hwnd); return 0;
                 case IDC_CAB: loadCabDialog(hwnd); return 0;
                 case IDC_ODON:
-                case IDC_ODB: applyControls(); return 0;
+                case IDC_ODB:
+                case IDC_DELAYON:
+                case IDC_EQON:
+                case IDC_HPFON:
+                case IDC_LPFON: applyControls(); return 0;
                 case IDC_AMP:
                     if (HIWORD(wp) == CBN_SELCHANGE) {
                         relabelAmp();
@@ -460,7 +541,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nShow) {
     wc.lpszClassName = L"PrincetonPractice";
     RegisterClassW(&wc);
 
-    RECT r{0, 0, 460, 842};
+    RECT r{0, 0, 908, 812};
     AdjustWindowRect(&r, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU
                      | WS_MINIMIZEBOX, FALSE);
     HWND hwnd = CreateWindowExW(

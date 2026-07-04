@@ -66,6 +66,10 @@ struct Pentode {
 inline Triode T12AX7() { return {100.0, 1.4, 1060.0, 600.0, 300.0}; }
 inline Triode T12AT7() { return {60.0, 1.35, 460.0, 300.0, 300.0}; }
 inline Pentode P6V6()  { return {12.7, 1.31, 583.0, 4500.0, 41.5, 12.7}; }
+// EL34 (Marshall power tube): Koren fit, more power/gm and a harder knee than
+// the 6V6 -> the aggressive Marshall power-stage breakup. KG1 scaled to hit
+// the datasheet Vp=Vg2=250 Vg1=-13.5 -> ~100 mA point.
+inline Pentode PEL34() { return {11.0, 1.35, 280.0, 4200.0, 60.0, 24.0}; }
 
 // ---- generic triode gain stage -------------------------------------------------
 
@@ -303,13 +307,68 @@ private:
     double iCtPrev_ = 0, iCbPrev_ = 0;
 };
 
+// ---- cathode follower (Marshall V2B tone-stack buffer) -------------------------
+// Triode with the output taken from the cathode: gain ~0.9, low output Z, and
+// an ASYMMETRIC soft compression -- on a big positive swing the grid pulls the
+// cathode up easily, but a big negative swing runs the tube toward cutoff and
+// the cathode can't follow, so transients get gently squashed on one side.
+// That one-sided squash is a documented part of Marshall crunch feel.
+// 1-unknown Newton on the cathode voltage vk: iP(vg-vk, B-vk) = vk/Rk.
+class CathodeFollower {
+public:
+    CathodeFollower(Triode tube, double fs, double B, double Rk,
+                    double Cc = 0.022e-6, double RL = 470e3)
+        : tube_(tube), T_(1.0 / fs), B_(B), Rk_(Rk), Cc_(Cc), RL_(RL) {
+        double vk = 1.0;
+        for (int it = 0; it < 200; ++it) {
+            double ip = tube_.ip(0.0 - vk, B_ - vk);
+            double f = ip - vk / Rk_;
+            double e = 1e-4;
+            double ipe = tube_.ip(0.0 - (vk + e), B_ - (vk + e));
+            double df = (ipe - ip) / e - 1.0 / Rk_;
+            vk -= f / df;
+        }
+        vkDc_ = vk;
+        vk_ = vk;
+        q_ = vk;                    // coupling cap: output DC = 0
+    }
+    double step(double vg) {
+        double vk = vk_;
+        for (int it = 0; it < 30; ++it) {
+            double ip = tube_.ip(vg - vk, B_ - vk);
+            double f = ip - vk / Rk_;
+            double e = 1e-5;
+            double ipe = tube_.ip(vg - (vk + e), B_ - (vk + e));
+            double df = (ipe - ip) / e - 1.0 / Rk_;
+            double dvk = f / df;
+            vk -= std::clamp(dvk, -20.0, 20.0);
+            if (std::fabs(dvk) < 1e-9) break;
+        }
+        vk_ = vk;
+        // output coupling cap (trapezoidal) -> AC-coupled cathode signal
+        double c = 2.0 * Cc_ / T_;
+        double iC = (c * (vk - q_) - iCPrev_) / (1.0 + c * RL_);
+        double vo = RL_ * iC;
+        q_ = vk - vo;
+        iCPrev_ = iC;
+        return vo;
+    }
+private:
+    Triode tube_;
+    double T_, B_, Rk_, Cc_, RL_;
+    double vkDc_ = 0, vk_ = 0, q_ = 0, iCPrev_ = 0;
+};
+
 // ---- 6V6 push-pull + OT (Lm, Cw, leakage) + speaker load ------------------------
 
 class PowerStage {
 public:
     explicit PowerStage(double fs, double Raa = 8000.0, double Lm = 15.0,
-                        double mHalf = 15.8, double idleMa = 30.0)
-        : tube_(P6V6()), T_(1.0 / fs), Lm_(Lm), m_(mHalf) {
+                        double mHalf = 15.8, double idleMa = 30.0,
+                        Pentode tube = P6V6(), double vbSup = 400.0,
+                        double vpSup = 410.0)
+        : tube_(tube), T_(1.0 / fs), Lm_(Lm), m_(mHalf),
+          vbSup_(vbSup), vpSup_(vpSup) {
         (void)Raa;
         const double Re = 6.4, Lvc = 0.8e-3, Rres = 20.0, Lces = 30e-3;
         const double Cmes = 1.0 / (std::pow(2 * kPi * 95.0, 2) * Lces);
@@ -324,9 +383,9 @@ public:
         double vg = -34.0;
         for (int it = 0; it < 200; ++it) {
             double ip, ig, ip2, ig2;
-            tube_.currents(vg, 400.0, 410.0, ip, ig);
+            tube_.currents(vg, vbSup_, vpSup_, ip, ig);
             double f = ip - idleMa * 1e-3;
-            tube_.currents(vg + 1e-4, 400.0, 410.0, ip2, ig2);
+            tube_.currents(vg + 1e-4, vbSup_, vpSup_, ip2, ig2);
             vg -= f / ((ip2 - ip) / 1e-4);
         }
         vbias_ = vg;
@@ -463,6 +522,7 @@ private:
     double iL_ = 0, iCwPrev_ = 0, vaa_ = 0;
     double iPlates_ = 0, iScreens_ = 0;
     double lkB_, lkA_, lkX1_ = 0, lkY1_ = 0;
+    double vbSup_ = 400.0, vpSup_ = 410.0;
 };
 
 // ---- PSU with sag ---------------------------------------------------------------

@@ -93,9 +93,11 @@ public:
           // cathode R -> high gain); V1 bright, V2 driver
           v1_(T12AX7(), fs, 320.0, 100e3, 820.0, 330e-6, 0.022e-6, 1e6),
           v2_(T12AX7(), fs, 320.0, 100e3, 2700.0, 0.68e-6, 0.022e-6, 1e6),
+          cf_(T12AX7(), fs, 320.0, 100e3),      // V2B cathode follower
           tone_(fs, treble, bass, mid),
           pi_(fs, 320.0),
-          power_(fs),
+          // EL34 push-pull, Marshall OT (Raa ~3.4k) + higher B+
+          power_(fs, 3400.0, 22.0, 22.0, 40.0, princeton::PEL34(), 470.0, 480.0),
           psu_(fs),
           gain_(gain), master_(master) {
         double wc = 2.0 * princeton::kPi * 250.0;
@@ -129,6 +131,7 @@ public:
             brHp_ += brA_ * (y - brHp_);
             y = y + bright_ * 1.5 * (y - brHp_);
             y = v2_.step(y * (0.1 + 1.4 * gain_));
+            y = cf_.step(y);                    // V2B cathode-follower buffer
             y = tone_.step(y);
             // presence shelf (see setPresence)
             prLp_ += prA_ * (y - prLp_);
@@ -148,6 +151,7 @@ public:
 private:
     double fs_;
     princeton::TriodeStage v1_, v2_;
+    princeton::CathodeFollower cf_;
     MarshallTone tone_;
     princeton::Cathodyne pi_;
     princeton::PowerStage power_;

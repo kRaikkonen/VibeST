@@ -99,10 +99,13 @@ private:
     double vinPrev_ = 0, vmPrev_ = 0, fdPrev_ = 0;
 };
 
-// ---- one-knob "tilt" tone control (TS/SD Tone, MP Treble) ---------------------
-// TS/SD tone is a single op-amp tilt between a low-passed and the flat path;
-// modelled here as a first-order crossfade (transparent-ish, the pedal's Tone
-// pot behaviour). fc ~ the pedal's tone corner.
+// ---- Tone control (TS/SD Tone stage, MP Treble) ------------------------------
+// The TS/SD active tone stage sweeps between "treble cut" (the signal through a
+// low-pass around the tone corner) and "flat" as the pot turns up. Modelled as
+// a crossfade between the low-passed and the unfiltered signal -> at tone 0 you
+// hear the low-passed (dark) path, at tone 1 the flat path. No magic gain: the
+// only numbers are the RC corner (fc) and the pot position (0..1). fc for the
+// TS Tone leg ~723 Hz; the SD is similar.
 class Tilt {
 public:
     Tilt(double fc, double fs) {
@@ -113,8 +116,7 @@ public:
     double step(double x) {
         double lp = b0_ * (x + x1_) - a1_ * lp1_;
         x1_ = x; lp1_ = lp;
-        double hp = x - lp;                        // complementary highpass
-        return (1.0 - tone_) * lp + tone_ * (lp + 1.6 * hp);  // tilt toward hi
+        return (1.0 - tone_) * lp + tone_ * x;     // dark low-pass <-> flat
     }
 private:
     double b0_, a1_, x1_ = 0, lp1_ = 0, tone_ = 0.5;

@@ -24,6 +24,7 @@
 #include "../engine/princeton.hpp"
 #include "../engine/plexi.hpp"
 #include "../engine/dsp.hpp"
+#include "../engine/fx.hpp"
 
 namespace pa {
 
@@ -40,6 +41,14 @@ struct Controls {
     double bDrive = 0.5, bTone = 0.5, bLevel = 0.35;
     int ampKind = 0;                // 0 Princeton Reverb, 1 Marshall Plexi
     int cabKind = 0;                // 0 C10R 1x10, 1 Greenback 2x12, 2 GB 4x12
+    // post-amp FX
+    bool delayOn = false;
+    double delayMs = 400, delayFb = 0.35, delayMix = 0.25;
+    double roomAmount = 0.25, roomWidth = 0.8;
+    bool eqOn = true;
+    double eqDb[9] = {0, 0, 0, 0, 0, 0, 0, 0, -0.4};   // per the image
+    bool eqHpfOn = false, eqLpfOn = false;
+    double eqHpfHz = 80, eqLpfHz = 10000;
     double volume = 0.4, treble = 0.55, bass = 0.5, reverb = 0.25;
     double tremSpeed = 0.45, tremIntensity = 0.0;
     // full-scale digital -> volts at the input jack. A real guitar sits at
@@ -92,6 +101,9 @@ struct Engine {
         // 18 Hz is below the lowest guitar note so it is tonally transparent.
         ampInHp.highpass(18.0, 0.707, eco_ ? 48000.0 : 96000.0);
         rebuildCab(0);
+        delay_.init(48000.0);
+        roomMic_.init(48000.0);
+        eq_.init(48000.0);
         apply(Controls{});
     }
 
@@ -141,6 +153,15 @@ struct Engine {
         plexiAmp.setPresence(c.tremSpeed);
         plexiAmp.setBright(c.tremIntensity);
         if (c.cabKind != ctl.cabKind) rebuildCab(c.cabKind);
+        // post-amp FX
+        delay_.setTimeMs(c.delayMs);
+        delay_.setFeedback(c.delayFb);
+        delay_.setMix(c.delayMix);
+        roomMic_.setAmount(c.roomAmount);
+        roomMic_.setWidth(c.roomWidth);
+        for (int b = 0; b < 9; ++b) eq_.setGainDb(b, c.eqDb[b]);
+        eq_.setHpf(c.eqHpfOn, c.eqHpfHz);
+        eq_.setLpf(c.eqLpfOn, c.eqLpfHz);
         ctl = c;
     }
 
@@ -166,8 +187,8 @@ struct Engine {
         }
     }
 
-    // one chunk: 128 mono samples in/out at 48k
-    void processChunk(const float* in, float* out) {
+    // one chunk: 128 mono samples in -> stereo (outL,outR) at 48k
+    void processChunk(const float* in, float* outL, float* outR) {
         double x48[kChunk48], x96[kChunk96], x192[kChunk192], x384[kChunk384];
         double b1[kChunk96], b2[kChunk96], b3[kChunk96], y96[kChunk96];
         double y48[kChunk48];
@@ -216,7 +237,11 @@ struct Engine {
             plexiAmp.processBlock(ampIn, ampOut, ampN);
         if (ampN == kChunk96) ampDn.process(y96, y48, kChunk48);
 
-        // ---- cab (IR or synthetic voicing) + master ------------------------
+        // ---- Boss delay (between amp and cab) ------------------------------
+        if (ctl.delayOn)
+            for (int i = 0; i < kChunk48; ++i) y48[i] = delay_.process(y48[i]);
+
+        // ---- cab (IR or synthetic voicing) ---------------------------------
         if (useCabIr) {
             double yc[kChunk48];
             cabConv.process(y48, yc);
@@ -226,18 +251,26 @@ struct Engine {
                 y48[i] = cabLp2.step(cabLp1.step(
                     cabPres.step(cabBump.step(cabHp.step(y48[i])))));
         }
-        // soft output ceiling with a linear region: a hard clamp turns an
-        // over-driven signal into a harsh digital square ("broken speaker").
-        // Below 0.9 it is exactly linear (the approved clean tone is
-        // untouched); above 0.9 it saturates smoothly to a 1.0 ceiling.
+
+        // ---- stereo room mic -> graphic EQ -> soft ceiling -> stereo out ---
+        // Soft ceiling: below 0.95 exactly linear (approved tone untouched);
+        // above it saturates smoothly to 1.0 so overs are graceful not harsh.
+        auto ceil = [](double a) {
+            double s = std::fabs(a);
+            return s > 0.95
+                ? std::copysign(0.95 + 0.05 * std::tanh((s - 0.95) / 0.05), a)
+                : a;
+        };
         float opk = outPeak.load() * 0.95f;
         for (int i = 0; i < kChunk48; ++i) {
-            double a = y48[i] * ctl.master;
-            double s = std::fabs(a);
-            if (s > 0.95)   // safety only — the amp should do the clipping
-                a = std::copysign(0.95 + 0.05 * std::tanh((s - 0.95) / 0.05), a);
-            out[i] = static_cast<float>(a);
-            opk = std::max(opk, static_cast<float>(std::fabs(a)));
+            double L, R;
+            roomMic_.process(y48[i], L, R);
+            if (ctl.eqOn) { L = eq_.step(0, L); R = eq_.step(1, R); }
+            L = ceil(L * ctl.master);
+            R = ceil(R * ctl.master);
+            outL[i] = static_cast<float>(L);
+            outR[i] = static_cast<float>(R);
+            opk = std::max(opk, static_cast<float>(std::fabs(0.5 * (L + R))));
         }
         outPeak.store(opk);
     }
@@ -257,6 +290,9 @@ struct Engine {
     dsp::Down2 ampDn;                  // 96->48 amp output (HQ)
     dsp::Biquad ampInHp;               // amp input DC blocker (18 Hz)
     dsp::Biquad cabHp, cabBump, cabPres, cabLp1, cabLp2;
+    fx::BossDelay delay_;              // between amp and cab
+    fx::RoomMic roomMic_;              // stereo studio room mic (tail)
+    fx::GraphicEQ eq_;                 // 9-band graphic EQ (very tail)
     Controls ctl;
     std::mutex mtx;
     // O(1) ring FIFOs (the old vector-erase FIFOs were O(n^2) and, worse,
@@ -295,10 +331,13 @@ inline void dataCallback(ma_device* dev, void* pOut, const void* pIn,
     int chunksDone = 0;
     auto t0 = std::chrono::steady_clock::now();
     while (e->inRing.avail() >= kChunk48) {
-        float chunkIn[kChunk48], chunkOut[kChunk48];
+        float chunkIn[kChunk48], cL[kChunk48], cR[kChunk48];
         for (int i = 0; i < kChunk48; ++i) chunkIn[i] = e->inRing.pop();
-        e->processChunk(chunkIn, chunkOut);
-        for (int i = 0; i < kChunk48; ++i) e->outRing.push(chunkOut[i]);
+        e->processChunk(chunkIn, cL, cR);
+        for (int i = 0; i < kChunk48; ++i) {   // interleaved stereo
+            e->outRing.push(cL[i]);
+            e->outRing.push(cR[i]);
+        }
         ++chunksDone;
     }
     if (chunksDone > 0) {
@@ -314,12 +353,15 @@ inline void dataCallback(ma_device* dev, void* pOut, const void* pIn,
         e->inRing.drop(e->inRing.avail() - kChunk48);
         e->drops.fetch_add(1);
     }
-    if (e->outRing.avail() > 6 * kChunk48)
-        e->outRing.drop(e->outRing.avail() - 2 * kChunk48);
+    if (e->outRing.avail() > 12 * kChunk48)     // stereo: 2 floats/frame
+        e->outRing.drop(e->outRing.avail() - 4 * kChunk48);
+    ma_uint32 nch = dev->playback.channels;
     for (ma_uint32 i = 0; i < frames; ++i) {
-        float s = e->outRing.avail() ? e->outRing.pop() : 0.0f;
-        for (ma_uint32 c = 0; c < dev->playback.channels; ++c)
-            out[i * dev->playback.channels + c] = s;
+        float l = 0, r = 0;
+        if (e->outRing.avail() >= 2) { l = e->outRing.pop(); r = e->outRing.pop(); }
+        if (nch >= 2) { out[i * nch] = l; out[i * nch + 1] = r;
+            for (ma_uint32 c = 2; c < nch; ++c) out[i * nch + c] = 0.0f; }
+        else out[i * nch] = 0.5f * (l + r);
     }
 }
 

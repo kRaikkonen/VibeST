@@ -30,10 +30,13 @@ inline int asioCallback(void* pOut, void* pIn, unsigned nFrames, double,
     int chunksDone = 0;
     auto t0 = std::chrono::steady_clock::now();
     while (e->inRing.avail() >= kChunk48) {
-        float ci[kChunk48], co[kChunk48];
+        float ci[kChunk48], cL[kChunk48], cR[kChunk48];
         for (int i = 0; i < kChunk48; ++i) ci[i] = e->inRing.pop();
-        e->processChunk(ci, co);
-        for (int i = 0; i < kChunk48; ++i) e->outRing.push(co[i]);
+        e->processChunk(ci, cL, cR);
+        for (int i = 0; i < kChunk48; ++i) {   // interleaved stereo
+            e->outRing.push(cL[i]);
+            e->outRing.push(cR[i]);
+        }
         ++chunksDone;
     }
     if (chunksDone > 0) {
@@ -47,12 +50,13 @@ inline int asioCallback(void* pOut, void* pIn, unsigned nFrames, double,
         e->inRing.drop(e->inRing.avail() - kChunk48);
         e->drops.fetch_add(1);
     }
-    if (e->outRing.avail() > 6 * kChunk48)
-        e->outRing.drop(e->outRing.avail() - 2 * kChunk48);
+    if (e->outRing.avail() > 12 * kChunk48)
+        e->outRing.drop(e->outRing.avail() - 4 * kChunk48);
     for (unsigned i = 0; i < nFrames; ++i) {
-        float s = e->outRing.avail() ? e->outRing.pop() : 0.0f;
-        out[2 * i] = s;                              // stereo output
-        out[2 * i + 1] = s;
+        float l = 0, r = 0;
+        if (e->outRing.avail() >= 2) { l = e->outRing.pop(); r = e->outRing.pop(); }
+        out[2 * i] = l;
+        out[2 * i + 1] = r;
     }
     return 0;
 }
