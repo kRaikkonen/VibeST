@@ -42,10 +42,10 @@ const Param kParams[23] = {
     {L"Level", 0, 1, 0.35},       // 13: slot B level
     {L"Time ms", 20, 1000, 402},  // 14: delay time
     {L"Feedbk", 0, 0.9, 0.351},   // 15: delay feedback
-    {L"Mix", 0, 1, 0.25},         // 16: delay mix
+    {L"E.Level", 0, 1.5, 0.6},    // 16: delay repeat level (Boss E.Level)
     {L"Room", 0, 1, 0.25},        // 17: room mic amount
     {L"Width", 0, 1, 0.8},        // 18: room mic width
-    {L"Gate Thr", 0, 1, 0.25},    // 19: noise gate threshold
+    {L"Threshold", 0, 1, 0.25},   // 19: noise gate threshold
     {L"Rate", 0, 1, 0.4},         // 20: chorus rate
     {L"Depth", 0, 1, 0.55},       // 21: chorus depth
     {L"Mix", 0, 1, 1.0},          // 22: chorus mix
@@ -405,10 +405,12 @@ void buildUi(HWND hwnd) {
     for (int i = 2; i <= 7; ++i)
         slider(i, 22, 504 + (i - 2) * 30, 224);
 
-    // ---- LEVELS section --------------------------------------------------
-    mk(hwnd, L"BUTTON", L"LEVELS", BS_GROUPBOX, 8, 704, 436, 92, 0);
+    // ---- LEVELS + noise gate --------------------------------------------
+    mk(hwnd, L"BUTTON", L"LEVELS  &  NOISE GATE", BS_GROUPBOX,
+       8, 704, 436, 128, 0);
     slider(8, 22, 726, 224);   // Input Trim
     slider(9, 22, 758, 224);   // Master
+    slider(19, 22, 794, 224);  // Noise Gate threshold
 
     // ================= RIGHT COLUMN: FX chain ============================
     int rx = 456;

@@ -54,30 +54,39 @@ public:
         baseMs_ = 9.0;   // BBD nominal delay
     }
     void setRate(double r01) {
-        rateHz_ = 0.1 + 5.0 * std::clamp(r01, 0.0, 1.0);    // 0.1..5 Hz
+        rateHz_ = 0.1 + 3.4 * std::clamp(r01, 0.0, 1.0);    // 0.1..3.5 Hz
     }
     void setDepth(double d01) { depth_ = std::clamp(d01, 0.0, 1.0); }
     void setMix(double m) { mix_ = std::clamp(m, 0.0, 1.0); }
 
-    double process(double x) {
-        ph_ += 2.0 * kPi * rateHz_ / fs_;
-        if (ph_ > 2.0 * kPi) ph_ -= 2.0 * kPi;
-        double swing = baseMs_ + depth_ * 5.0 * std::sin(ph_);   // ms
-        double dsamp = swing * fs_ / 1000.0;
+    double readAt(double ms) {
+        double dsamp = ms * fs_ / 1000.0;
         size_t n = buf_.size();
         double rp = static_cast<double>(w_) - dsamp;
         while (rp < 0) rp += n;
         size_t i0 = static_cast<size_t>(rp);
         double frac = rp - i0;
         double a = buf_[i0], b = buf_[(i0 + 1) % n];
-        double d = a + (b - a) * frac;
-        lp_ += 0.4 * (d - lp_);              // BBD darkening
+        return a + (b - a) * frac;
+    }
+    double process(double x) {
+        ph_ += 2.0 * kPi * rateHz_ / fs_;
+        if (ph_ > 2.0 * kPi) ph_ -= 2.0 * kPi;
         buf_[w_] = x;
-        w_ = (w_ + 1) % n;
+        // GENTLE modulation: base 7 ms, +/- (depth*2.5) ms. Deeper than this
+        // turns the pitch wobble into seasick warble / "spring boing". Two
+        // voices in quadrature (sin and cos LFO) give the lush CE-2 shimmer
+        // and average out the single-voice comb notch, so it never sounds
+        // like a static flanger at low depth.
+        double m1 = 7.0 + depth_ * 2.5 * std::sin(ph_);
+        double m2 = 8.0 + depth_ * 2.5 * std::cos(ph_);   // quadrature voice
+        double d = 0.5 * (readAt(m1) + readAt(m2));
+        lp_ += 0.5 * (d - lp_);             // BBD bandwidth darkening
+        w_ = (w_ + 1) % buf_.size();
         return x * (1.0 - 0.5 * mix_) + lp_ * (0.5 * mix_);
     }
 private:
-    double fs_ = 48000, rateHz_ = 1.0, depth_ = 0.6, mix_ = 1.0, baseMs_ = 9;
+    double fs_ = 48000, rateHz_ = 1.0, depth_ = 0.55, mix_ = 1.0, baseMs_ = 7;
     double ph_ = 0, lp_ = 0;
     std::vector<double> buf_;
     size_t w_ = 0;
@@ -98,7 +107,8 @@ public:
     void setTimeMs(double ms) { delaySamp_ = std::clamp(ms, 20.0, 2000.0)
                                              * fs_ / 1000.0; }
     void setFeedback(double f) { fb_ = std::clamp(f, 0.0, 0.95); }
-    void setMix(double m) { mix_ = std::clamp(m, 0.0, 1.0); }
+    // Boss "E.Level" — the repeat volume added on top of the (always full) dry
+    void setLevel(double m) { level_ = std::clamp(m, 0.0, 1.5); }
     void setToneHz(double hz) { toneA_ = 1.0 - std::exp(-2.0 * kPi * hz / fs_); }
 
     double process(double x) {
@@ -115,11 +125,11 @@ public:
         if (!std::isfinite(wr) || std::fabs(wr) > 8.0) wr = 0.0;  // anti-runaway
         buf_[w_] = wr;
         w_ = (w_ + 1) % n;
-        return x * (1.0 - mix_) + d * mix_;
+        return x + level_ * d;                     // dry always full + echoes
     }
 
 private:
-    double fs_ = 48000, delaySamp_ = 19200, fb_ = 0.35, mix_ = 0.25;
+    double fs_ = 48000, delaySamp_ = 19200, fb_ = 0.35, level_ = 0.6;
     double fbLp_ = 0.0, toneA_ = 0.3;
     std::vector<double> buf_;
     size_t w_ = 0;

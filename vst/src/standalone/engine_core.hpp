@@ -49,7 +49,7 @@ struct Controls {
     double chorusRate = 0.4, chorusDepth = 0.55, chorusMix = 1.0;
     // post-amp FX -- user preset
     bool delayOn = true;
-    double delayMs = 402, delayFb = 0.351, delayMix = 0.25;
+    double delayMs = 402, delayFb = 0.351, delayMix = 0.6;   // E.Level
     bool roomOn = true;
     double roomAmount = 0.25, roomWidth = 0.8;
     bool eqOn = true;
@@ -169,7 +169,7 @@ struct Engine {
         chorus_.setMix(c.chorusMix);
         delay_.setTimeMs(c.delayMs);
         delay_.setFeedback(c.delayFb);
-        delay_.setMix(c.delayMix);
+        delay_.setLevel(c.delayMix);   // delayMix is now the Boss E.Level
         roomMic_.setAmount(c.roomAmount);
         roomMic_.setWidth(c.roomWidth);
         for (int b = 0; b < 9; ++b) eq_.setGainDb(b, c.eqDb[b]);
