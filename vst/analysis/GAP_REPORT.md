@@ -43,6 +43,22 @@
 
 > ⚠️ 我 head 的**真实**线性频响和谐波性格**现在测不准**(被 #1 振荡淹了)。修完 #1 才能干净对比 voicing 和谐波(暖/硬)。
 
+## 真机对拍协议结果(2026-07-05 深夜,按用户 head→cab→combined + 频谱/波形图)
+
+工具:`head_match.py`(我的 head vs NAM head)、`cab_match.py`(我的 cab vs 真 IR)。图在 `renders/head_match.png`、`cab_match.png`。
+
+**HEAD(我的 vs 真 Princeton Clean NAM,DI 实弹 Welch 谱 + 波形):**
+- 🔴 **高频严重过量**:真 head 在 1kHz 以上狠狠滚降(5k=-40dB),我的却在 4-5kHz 鼓 +20dB 的包 → **差 ~50dB@5k**。缺了真放大器的高频滚降(Miller 电容、耦合、OT 带宽)。
+- 🔴 **削波太硬**:波形上真机是**圆润软削波**,我的是**尖锐带毛刺硬削波**(fizz 来源)。
+- 🟠 **偏薄**:低中频(160-640Hz)比真机低 ~8dB。
+- 🔴 **喇叭阻抗烤进了 head**:我的 head 输出 vspk_ 带着功率级喇叭 LC 的浴缸形阻抗曲线,而 NAM head 是无喇叭的(load box)。等于把喇叭算了两遍(功率级阻抗 + cab IR)。
+- 🟡 **hum**:信号极低时 PSU 纹波冒头(idle 静=推挽共模抵消;有信号时不对称→出 hum)。
+
+**CAB(我的合成 C10R vs 真 Princeton Jensen P10R IR):**
+- 🔴 **太暗**:真箱有 3-4.5kHz 的 presence 峰再滚降;我的合成 cab 1kHz 以上就狂砍(5k 差 33dB)、没 presence、脉冲响应细节也糊。**修复=直接用真 IR**(用户已给)。
+
+**结论(完全自洽)**:head 太亮 + cab 太暗,两个错**部分互相抵消**所以"能出声",但都不对,不抵消的地方就是 fizz/发硬/发薄。**这就是"一坨屎"的量化答案。**
+
 ## 修复计划(顺序不能乱)
 
 1. **先杀 #1 功率级自激**。查 PowerStage 的 vaa bracketed-Newton + OT(Cw/漏感)+ 喇叭 LC 离散化,大概率是某个 LC 回路在离散域极点跑到单位圆外。手段:idle 零输入下逐元件看谁在振(先冻结喇叭模型、再冻结 Cw,二分定位),用梯形→TR-BDF2 或给该回路加物理阻尼。**验收:喂零 → 输出 < -60 dBFS。**

@@ -94,6 +94,13 @@ int main(int argc,char**argv){
     for(int i=3;i<argc;++i){gArgs+=" ";gArgs+=argv[i];} gArgs+=" ";
     // IR self-analysis: load the raw IR and report its own spectral centroid +
     // where it rolls off, to tell a genuinely-bright cab from a load/tail bug.
+    std::string di_=gets("dumpir");   // write speakerIr(N) to out.wav and exit
+    if(!di_.empty()){
+        auto h=pa::speakerIr(std::atoi(di_.c_str()),48000.0);
+        std::vector<float> hf(h.begin(),h.end());
+        writeWav(argv[2],hf,hf,48000); std::printf("dumped synth IR %s (%zu)\n",di_.c_str(),h.size());
+        return 0;
+    }
     std::string ira=gets("iranalyze");
     if(!ira.empty()){
         std::vector<double> h;
