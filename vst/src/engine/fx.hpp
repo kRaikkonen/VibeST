@@ -122,7 +122,12 @@ public:
         double d = a + (b - a) * frac;             // fractional read
         fbLp_ += toneA_ * (d - fbLp_);             // darken the repeats
         double wr = x + fb_ * fbLp_;               // input + feedback
-        if (!std::isfinite(wr) || std::fabs(wr) > 8.0) wr = 0.0;  // anti-runaway
+        // anti-runaway ONLY: the delay runs in the amp-voltage domain (~±25 V),
+        // so the safety bound must be at the amp's physical limit, not ±1.
+        // (An ±8 bound here zeroed the buffer on every loud sample -> chopped,
+        //  "digital"/dirty echoes.)
+        if (!std::isfinite(wr)) wr = 0.0;
+        wr = std::clamp(wr, -2000.0, 2000.0);
         buf_[w_] = wr;
         w_ = (w_ + 1) % n;
         return x + level_ * d;                     // dry always full + echoes
