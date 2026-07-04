@@ -734,15 +734,25 @@ public:
           psu_(fs) {
         tremHz_ = 3.0 + 4.0 * c.tremSpeed;
         tremDepth_ = 4.0 * c.tremIntensity;
-        // NFB feedback low-pass. The discrete one-sample loop delay plus the
-        // OT/speaker model resonance (~8 kHz) make the closed loop oscillate
-        // there unless the feedback is rolled off well below it (measured:
-        // stable at both 48 k and 96 k for fc <= 300 Hz). 250 Hz gives margin.
-        // NB: real amps keep NFB across the band; this low cutoff is a
-        // stability compromise of the explicit (delayed) loop — an implicit
-        // loop solve is the proper fix (tracked). Tone above 250 Hz runs
-        // closer to open-loop (brighter), acceptable for a blackface voicing.
-        setFbCutoff(250.0);
+        // NFB feedback low-pass. HISTORY: an earlier build oscillated for
+        // fc > ~300 Hz, so this sat at 250 Hz — but that was BEFORE the OT
+        // winding-cap (Cw=500pF) + leakage pole were added to roll the loop
+        // gain off with frequency. With those in place the closed loop is
+        // unconditionally stable: test/diag_nfb drives a hard burst into
+        // silence and the tail DECAYS at every cutoff up to 20 kHz, at both
+        // 48 k and 96 k (never grows, always finite). So the 250 Hz roll-off
+        // was vestigial over-conservatism that opened the loop across the
+        // whole guitar band (bright/fizzy, loose transients). Real amps keep
+        // NFB full-band, limited only by the OT bandwidth — so we now let the
+        // OT pole (~20 kHz) be the limiter and set the feedback cutoff to
+        // 8 kHz (above the guitar band; the OT dominates above it anyway).
+        // Measured on the Suffer DI (test/render_di): crest 9.8 -> 10.4 dB
+        // (tighter transients = better feel), centroid 1736 -> 1648 Hz (less
+        // fizz). This resolves the "implicit loop solve" TODO by measurement:
+        // the explicit loop needs no implicit solve because it does not
+        // actually oscillate — a per-sample implicit solve would cost 2-3x
+        // for no benefit any measurement can find.
+        setFbCutoff(8000.0);
     }
 
     // live control changes (call between blocks)

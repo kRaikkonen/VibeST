@@ -118,10 +118,15 @@ int main(int argc, char** argv) {
     std::vector<float> in = resample(slice, sr, 48000);
     metrics("DI(in)", in, 48000);
 
-    pa::Engine eng(pa::springTankIr(96000.0), {}, /*eco=*/false);
+    bool eco = (argc > 7) && std::atoi(argv[7]) != 0;   // 1 = eco/48k amp
+    pa::Engine eng(pa::springTankIr(eco ? 48000.0 : 96000.0), {}, eco);
     if (argc > 5) {   // master override (0 = keep preset) to probe staging
         double m = std::atof(argv[5]);
         if (m > 0) { pa::Controls c = eng.ctl; c.master = m; eng.apply(c); }
+    }
+    if (argc > 6) {   // Princeton NFB feedback-LP cutoff Hz (0 = default ~1.7k)
+        double fc = std::atof(argv[6]);
+        if (fc > 0) eng.amp.setFbCutoff(fc);
     }
     // pad to a chunk multiple
     while (in.size() % pa::kChunk48) in.push_back(0.0f);
