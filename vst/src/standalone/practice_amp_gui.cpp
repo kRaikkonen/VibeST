@@ -21,6 +21,7 @@ constexpr int IDC_IN = 100, IDC_OUT = 101, IDC_EXCL = 102, IDC_START = 103,
               IDC_PEDAL = 111, IDC_AMP = 112, IDC_PEDALB = 113,
               IDC_ODB = 114, IDC_CABKIND = 115, IDC_DELAYON = 116,
               IDC_EQON = 117, IDC_HPFON = 118, IDC_LPFON = 119,
+              IDC_GATEON = 120, IDC_CHORUSON = 121, IDC_ROOMON = 122,
               IDC_EQ0 = 200;              // 200..208 = 9 EQ faders
 constexpr int IDC_SLIDER0 = 120;   // 10 sliders: 120..129
 constexpr int IDC_VAL0 = 140;      // value labels: 140..149
@@ -29,23 +30,27 @@ struct Param {
     const wchar_t* name;
     double lo, hi, def;
 };
-const Param kParams[19] = {
+const Param kParams[23] = {
     {L"Drive", 0, 1, 0.6},        {L"Level", 0, 1, 0.35},
-    {L"Volume", 0, 1, 0.4},       {L"Treble", 0, 1, 0.55},
-    {L"Bass", 0, 1, 0.5},         {L"Reverb", 0, 1, 0.25},
+    {L"Volume", 0, 1, 0.83},      {L"Treble", 0, 1, 0.63},
+    {L"Bass", 0, 1, 0.43},        {L"Reverb", 0, 1, 0.15},
     {L"Trem Speed", 0, 1, 0.45},  {L"Trem Intensity", 0, 1, 0.0},
-    {L"Input Trim", 0, 1.0, 0.4},{L"Master", 0, 0.2, 0.045},
+    {L"Input Trim", 0, 1.0, 0.29},{L"Master", 0, 0.2, 0.018},
     {L"Tone", 0, 1, 0.5},         // 10: slot A tone
     {L"Drive", 0, 1, 0.5},        // 11: slot B drive
     {L"Tone", 0, 1, 0.5},         // 12: slot B tone
     {L"Level", 0, 1, 0.35},       // 13: slot B level
-    {L"Time ms", 20, 1000, 400},  // 14: delay time
-    {L"Feedbk", 0, 0.9, 0.35},    // 15: delay feedback
+    {L"Time ms", 20, 1000, 402},  // 14: delay time
+    {L"Feedbk", 0, 0.9, 0.351},   // 15: delay feedback
     {L"Mix", 0, 1, 0.25},         // 16: delay mix
     {L"Room", 0, 1, 0.25},        // 17: room mic amount
     {L"Width", 0, 1, 0.8},        // 18: room mic width
+    {L"Gate Thr", 0, 1, 0.25},    // 19: noise gate threshold
+    {L"Rate", 0, 1, 0.4},         // 20: chorus rate
+    {L"Depth", 0, 1, 0.55},       // 21: chorus depth
+    {L"Mix", 0, 1, 1.0},          // 22: chorus mix
 };
-constexpr int NP = 19;
+constexpr int NP = 23;
 // amp-dependent labels for sliders 2..7
 const wchar_t* kAmpLabels[2][6] = {
     {L"Volume", L"Treble", L"Bass", L"Reverb", L"Trem Speed",
@@ -63,7 +68,8 @@ ma_uint32 gNPlayback = 0, gNCapture = 0;
 HWND gSliders[NP], gVals[NP], gParamLbl[NP], gStatus, gInCombo, gOutCombo,
      gExcl, gOdOn, gOdB, gStartBtn, gBufCombo, gBackend, gInCh, gEco,
      gCabLabel, gPedalKind, gPedalKindB, gAmpKind, gCabKind,
-     gDelayOn, gEqOn, gHpfOn, gLpfOn, gEqFader[9], gEqVal[9];
+     gDelayOn, gEqOn, gHpfOn, gLpfOn, gEqFader[9], gEqVal[9],
+     gGateOn, gChorusOn, gRoomOn;
 HFONT gFont;
 std::wstring gStatusBase;
 const int kBufSizes[4] = {64, 128, 256, 512};
@@ -136,6 +142,13 @@ void applyControls() {
     c.eqOn = SendMessageW(gEqOn, BM_GETCHECK, 0, 0) == BST_CHECKED;
     c.eqHpfOn = SendMessageW(gHpfOn, BM_GETCHECK, 0, 0) == BST_CHECKED;
     c.eqLpfOn = SendMessageW(gLpfOn, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    c.gateOn = SendMessageW(gGateOn, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    c.gateThresh = sliderValue(19);
+    c.chorusOn = SendMessageW(gChorusOn, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    c.chorusRate = sliderValue(20);
+    c.chorusDepth = sliderValue(21);
+    c.chorusMix = sliderValue(22);
+    c.roomOn = SendMessageW(gRoomOn, BM_GETCHECK, 0, 0) == BST_CHECKED;
     for (int b = 0; b < 9; ++b) {   // faders: 0..100 -> -12..+12 dB
         int pos = static_cast<int>(SendMessageW(gEqFader[b], TBM_GETPOS, 0, 0));
         c.eqDb[b] = (50 - pos) * 12.0 / 50.0;   // top = +12, mid = 0
@@ -324,14 +337,17 @@ void buildUi(HWND hwnd) {
 
     gEco = mk(hwnd, L"BUTTON", L"Eco (low CPU)", BS_AUTOCHECKBOX,
               12, 158, 110, 22, IDC_ECO);
-    mk(hwnd, L"STATIC", L"Cab:", 0, 128, 162, 32, 18, 0);
+    gGateOn = mk(hwnd, L"BUTTON", L"Noise Gate", BS_AUTOCHECKBOX,
+                 128, 158, 96, 22, IDC_GATEON);
+    SendMessageW(gGateOn, BM_SETCHECK, BST_CHECKED, 0);   // preset: on
+    mk(hwnd, L"STATIC", L"Cab:", 0, 232, 162, 32, 18, 0);
     gCabKind = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST,
-                  162, 158, 150, 140, IDC_CABKIND);
+                  266, 158, 150, 140, IDC_CABKIND);
     for (auto* n : {L"Jensen C10R 1x10", L"Greenback 2x12",
                     L"Greenback 4x12"})
         SendMessageW(gCabKind, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(n));
-    SendMessageW(gCabKind, CB_SETCURSEL, 0, 0);
-    gCabLabel = mk(hwnd, L"STATIC", L"(built-in)", 0, 320, 162, 116, 18, 0);
+    SendMessageW(gCabKind, CB_SETCURSEL, 2, 0);           // preset: GB 4x12
+    gCabLabel = mk(hwnd, L"STATIC", L"(built-in)", 0, 224, 182, 100, 16, 0);
 
     populateDevices();
 
@@ -363,6 +379,7 @@ void buildUi(HWND hwnd) {
     };
     gOdOn = mk(hwnd, L"BUTTON", L"Slot A", BS_AUTOCHECKBOX,
                22, 208, 70, 20, IDC_ODON);
+    SendMessageW(gOdOn, BM_SETCHECK, BST_CHECKED, 0);   // preset: on
     gPedalKind = pedalCombo(IDC_PEDAL, 100, 205);
     SendMessageW(gPedalKind, CB_SETCURSEL, 0, 0);
     slider(0, 22, 232, 224);   // A Drive
@@ -371,8 +388,9 @@ void buildUi(HWND hwnd) {
 
     gOdB = mk(hwnd, L"BUTTON", L"Slot B", BS_AUTOCHECKBOX,
               22, 326, 70, 20, IDC_ODB);
+    SendMessageW(gOdB, BM_SETCHECK, BST_CHECKED, 0);     // preset: on
     gPedalKindB = pedalCombo(IDC_PEDALB, 100, 323);
-    SendMessageW(gPedalKindB, CB_SETCURSEL, 2, 0);   // default TS-808
+    SendMessageW(gPedalKindB, CB_SETCURSEL, 3, 0);   // preset: Mad Red
     slider(11, 22, 350, 224);  // B Drive
     slider(12, 22, 380, 224);  // B Tone
     slider(13, 22, 410, 224);  // B Level
@@ -392,45 +410,59 @@ void buildUi(HWND hwnd) {
     slider(8, 22, 726, 224);   // Input Trim
     slider(9, 22, 758, 224);   // Master
 
-    // ================= RIGHT COLUMN: post-amp FX =========================
+    // ================= RIGHT COLUMN: FX chain ============================
     int rx = 456;
+    mk(hwnd, L"BUTTON", L"CE-2 CHORUS  (after amp)",
+       BS_GROUPBOX, rx, 186, 436, 128, 0);
+    gChorusOn = mk(hwnd, L"BUTTON", L"Engage", BS_AUTOCHECKBOX,
+                   rx + 14, 206, 120, 20, IDC_CHORUSON);
+    slider(20, rx + 14, 230, 190);   // Rate
+    slider(21, rx + 14, 258, 190);   // Depth
+    slider(22, rx + 14, 286, 190);   // Mix
+
     mk(hwnd, L"BUTTON", L"BOSS DIGITAL DELAY  (amp → cab)",
-       BS_GROUPBOX, rx, 186, 436, 158, 0);
+       BS_GROUPBOX, rx, 322, 436, 128, 0);
     gDelayOn = mk(hwnd, L"BUTTON", L"Engage", BS_AUTOCHECKBOX,
-                  rx + 14, 208, 120, 20, IDC_DELAYON);
-    slider(14, rx + 14, 234, 190);   // Time ms
-    slider(15, rx + 14, 264, 190);   // Feedback
-    slider(16, rx + 14, 294, 190);   // Mix
+                  rx + 14, 342, 120, 20, IDC_DELAYON);
+    SendMessageW(gDelayOn, BM_SETCHECK, BST_CHECKED, 0);   // preset: on
+    slider(14, rx + 14, 366, 190);   // Time ms
+    slider(15, rx + 14, 394, 190);   // Feedback
+    slider(16, rx + 14, 422, 190);   // Mix
 
     mk(hwnd, L"BUTTON", L"STUDIO ROOM MIC  (stereo)",
-       BS_GROUPBOX, rx, 352, 436, 96, 0);
-    slider(17, rx + 14, 374, 190);   // Room amount
-    slider(18, rx + 14, 404, 190);   // Width
+       BS_GROUPBOX, rx, 458, 436, 96, 0);
+    gRoomOn = mk(hwnd, L"BUTTON", L"Engage", BS_AUTOCHECKBOX,
+                 rx + 300, 478, 120, 20, IDC_ROOMON);
+    SendMessageW(gRoomOn, BM_SETCHECK, BST_CHECKED, 0);    // preset: on
+    slider(17, rx + 14, 478, 190);   // Room amount
+    slider(18, rx + 14, 508, 190);   // Width
 
     // ---- 9-band GRAPHIC EQ (the reference pedal) -------------------------
     mk(hwnd, L"BUTTON", L"GRAPHIC EQ  (stereo, signal tail)",
-       BS_GROUPBOX, rx, 456, 436, 336, 0);
+       BS_GROUPBOX, rx, 562, 436, 330, 0);
     gEqOn = mk(hwnd, L"BUTTON", L"On", BS_AUTOCHECKBOX,
-               rx + 14, 476, 50, 20, IDC_EQON);
+               rx + 14, 582, 50, 20, IDC_EQON);
     SendMessageW(gEqOn, BM_SETCHECK, BST_CHECKED, 0);
     gHpfOn = mk(hwnd, L"BUTTON", L"HPF", BS_AUTOCHECKBOX,
-                rx + 300, 476, 56, 20, IDC_HPFON);
+                rx + 300, 582, 56, 20, IDC_HPFON);
+    SendMessageW(gHpfOn, BM_SETCHECK, BST_CHECKED, 0);     // preset: on
     gLpfOn = mk(hwnd, L"BUTTON", L"LPF", BS_AUTOCHECKBOX,
-                rx + 366, 476, 56, 20, IDC_LPFON);
+                rx + 366, 582, 56, 20, IDC_LPFON);
+    SendMessageW(gLpfOn, BM_SETCHECK, BST_CHECKED, 0);     // preset: on
     const wchar_t* efn[9] = {L"75", L"150", L"250", L"400", L"800",
                              L"1.5k", L"4.5k", L"8k", L"12k"};
-    double eqDef[9] = {0, 0, 0, 0, 0, 0, 0, 0, -0.4};
+    double eqDef[9] = {0, 2.6, 2.4, 0, 0, -2.2, 2.6, 4.3, -0.4};   // preset
     for (int b = 0; b < 9; ++b) {
         int x = rx + 20 + b * 46;
-        gEqVal[b] = mk(hwnd, L"STATIC", L"0.0", SS_CENTER, x - 6, 502, 44, 16,
+        gEqVal[b] = mk(hwnd, L"STATIC", L"0.0", SS_CENTER, x - 6, 608, 44, 16,
                        0);
         gEqFader[b] = mk(hwnd, TRACKBAR_CLASSW, nullptr,
-                         TBS_VERT | TBS_AUTOTICKS | TBS_BOTH, x, 522, 30, 220,
+                         TBS_VERT | TBS_AUTOTICKS | TBS_BOTH, x, 628, 30, 218,
                          IDC_EQ0 + b);
         SendMessageW(gEqFader[b], TBM_SETRANGE, TRUE, MAKELPARAM(0, 100));
         SendMessageW(gEqFader[b], TBM_SETPOS, TRUE,
                      50 - static_cast<int>(eqDef[b] * 50.0 / 12.0));
-        mk(hwnd, L"STATIC", efn[b], SS_CENTER, x - 6, 748, 44, 16, 0);
+        mk(hwnd, L"STATIC", efn[b], SS_CENTER, x - 6, 850, 44, 16, 0);
         wchar_t v[8];
         swprintf(v, 8, L"%+.1f", eqDef[b]);
         SetWindowTextW(gEqVal[b], v);
@@ -448,6 +480,8 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_CREATE:
             buildUi(hwnd);
+            relabelAmp();
+            applyControls();          // push the default preset to the engine
             SetTimer(hwnd, 1, 1000, nullptr);
             return 0;
         case WM_TIMER:
@@ -541,7 +575,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nShow) {
     wc.lpszClassName = L"PrincetonPractice";
     RegisterClassW(&wc);
 
-    RECT r{0, 0, 908, 812};
+    RECT r{0, 0, 908, 912};
     AdjustWindowRect(&r, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU
                      | WS_MINIMIZEBOX, FALSE);
     HWND hwnd = CreateWindowExW(

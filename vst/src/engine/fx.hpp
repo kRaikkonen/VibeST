@@ -13,6 +13,76 @@ namespace fx {
 
 inline constexpr double kPi = 3.14159265358979323846;
 
+// ---- noise gate (front of chain) -------------------------------------------
+// Envelope-following gate: when the guitar signal falls below threshold, fade
+// the level down (kills hiss/hum between notes). Fast attack (opens instantly
+// on a note), slower release (doesn't chatter on decays).
+class NoiseGate {
+public:
+    void init(double fs) {
+        fs_ = fs;
+        atkA_ = 1.0 - std::exp(-1.0 / (0.002 * fs));   // 2 ms open
+        relA_ = 1.0 - std::exp(-1.0 / (0.080 * fs));   // 80 ms close
+    }
+    void setThreshold(double t01) {
+        // 0..1 -> -70..-20 dBFS threshold
+        thr_ = std::pow(10.0, (-70.0 + 50.0 * std::clamp(t01, 0.0, 1.0)) / 20.0);
+    }
+    double process(double x) {
+        double e = std::fabs(x);
+        env_ += (e > env_ ? atkA_ : relA_) * (e - env_);
+        double target = env_ > thr_ ? 1.0 : 0.0;
+        gain_ += (target > gain_ ? atkA_ : relA_) * (target - gain_);
+        return x * gain_;
+    }
+private:
+    double fs_ = 48000, atkA_ = 0.1, relA_ = 0.001, thr_ = 0.003;
+    double env_ = 0, gain_ = 0;
+};
+
+// ---- Boss CE-2 chorus (BBD, mono) ------------------------------------------
+// A chorus is a short (~5-20 ms) delay whose time is swept by an LFO, mixed
+// 50/50 with dry -> the pitch-wobbling "shimmer/thicken". The CE-2 is a mono
+// BBD chorus with Rate + Depth. Repeats are slightly dark (BBD bandwidth).
+class CE2Chorus {
+public:
+    void init(double fs) {
+        fs_ = fs;
+        buf_.assign(static_cast<size_t>(fs * 0.05), 0.0);   // up to 50 ms
+        w_ = 0; ph_ = 0; lp_ = 0;
+        setRate(0.4); setDepth(0.6);
+        baseMs_ = 9.0;   // BBD nominal delay
+    }
+    void setRate(double r01) {
+        rateHz_ = 0.1 + 5.0 * std::clamp(r01, 0.0, 1.0);    // 0.1..5 Hz
+    }
+    void setDepth(double d01) { depth_ = std::clamp(d01, 0.0, 1.0); }
+    void setMix(double m) { mix_ = std::clamp(m, 0.0, 1.0); }
+
+    double process(double x) {
+        ph_ += 2.0 * kPi * rateHz_ / fs_;
+        if (ph_ > 2.0 * kPi) ph_ -= 2.0 * kPi;
+        double swing = baseMs_ + depth_ * 5.0 * std::sin(ph_);   // ms
+        double dsamp = swing * fs_ / 1000.0;
+        size_t n = buf_.size();
+        double rp = static_cast<double>(w_) - dsamp;
+        while (rp < 0) rp += n;
+        size_t i0 = static_cast<size_t>(rp);
+        double frac = rp - i0;
+        double a = buf_[i0], b = buf_[(i0 + 1) % n];
+        double d = a + (b - a) * frac;
+        lp_ += 0.4 * (d - lp_);              // BBD darkening
+        buf_[w_] = x;
+        w_ = (w_ + 1) % n;
+        return x * (1.0 - 0.5 * mix_) + lp_ * (0.5 * mix_);
+    }
+private:
+    double fs_ = 48000, rateHz_ = 1.0, depth_ = 0.6, mix_ = 1.0, baseMs_ = 9;
+    double ph_ = 0, lp_ = 0;
+    std::vector<double> buf_;
+    size_t w_ = 0;
+};
+
 // ---- Boss-style digital delay (DD-3/DD-7 voicing) --------------------------
 // Digital delay line + feedback, with the classic slightly-dark repeats
 // (each repeat rolls off highs a touch, like the real bucket of bits).
@@ -41,7 +111,9 @@ public:
         double b = buf_[(i0 + 1) % n];
         double d = a + (b - a) * frac;             // fractional read
         fbLp_ += toneA_ * (d - fbLp_);             // darken the repeats
-        buf_[w_] = x + fb_ * fbLp_;                // write input + feedback
+        double wr = x + fb_ * fbLp_;               // input + feedback
+        if (!std::isfinite(wr) || std::fabs(wr) > 8.0) wr = 0.0;  // anti-runaway
+        buf_[w_] = wr;
         w_ = (w_ + 1) % n;
         return x * (1.0 - mix_) + d * mix_;
     }

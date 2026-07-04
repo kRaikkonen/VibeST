@@ -34,34 +34,41 @@ constexpr int kChunk192 = 4 * kChunk48;
 constexpr int kChunk384 = 8 * kChunk48;     // OD-1 runs here (its valid rate)
 
 struct Controls {
-    // two stackable pedal slots (A feeds B feeds the amp)
-    bool aOn = false, bOn = false;
-    int aKind = 0, bKind = 2;       // 0 OD-1, 1 SD-1, 2 TS-808, 3 Mad Red
+    // front of chain: noise gate
+    bool gateOn = true;
+    double gateThresh = 0.25;
+    // two stackable pedal slots (A feeds B feeds the amp) -- user preset
+    bool aOn = true, bOn = true;
+    int aKind = 0, bKind = 3;       // 0 OD-1, 1 SD-1, 2 TS-808, 3 Mad Red
     double aDrive = 0.6, aTone = 0.5, aLevel = 0.35;
     double bDrive = 0.5, bTone = 0.5, bLevel = 0.35;
     int ampKind = 0;                // 0 Princeton Reverb, 1 Marshall Plexi
-    int cabKind = 0;                // 0 C10R 1x10, 1 Greenback 2x12, 2 GB 4x12
-    // post-amp FX
-    bool delayOn = false;
-    double delayMs = 400, delayFb = 0.35, delayMix = 0.25;
+    int cabKind = 2;                // 0 C10R 1x10, 1 Greenback 2x12, 2 GB 4x12
+    // CE-2 chorus (after amp, before delay)
+    bool chorusOn = false;
+    double chorusRate = 0.4, chorusDepth = 0.55, chorusMix = 1.0;
+    // post-amp FX -- user preset
+    bool delayOn = true;
+    double delayMs = 402, delayFb = 0.351, delayMix = 0.25;
+    bool roomOn = true;
     double roomAmount = 0.25, roomWidth = 0.8;
     bool eqOn = true;
-    double eqDb[9] = {0, 0, 0, 0, 0, 0, 0, 0, -0.4};   // per the image
-    bool eqHpfOn = false, eqLpfOn = false;
+    double eqDb[9] = {0, 2.6, 2.4, 0, 0, -2.2, 2.6, 4.3, -0.4};  // preset
+    bool eqHpfOn = true, eqLpfOn = true;
     double eqHpfHz = 80, eqLpfHz = 10000;
-    double volume = 0.4, treble = 0.55, bass = 0.5, reverb = 0.25;
+    double volume = 0.83, treble = 0.63, bass = 0.43, reverb = 0.15;
     double tremSpeed = 0.45, tremIntensity = 0.0;
     // full-scale digital -> volts at the input jack. A real guitar sits at
     // ~0.1-0.25 V; 0.15 mapped a typical picked note to only ~30-60 mV, far
     // too weak to drive the OD-1 into real clipping (it barely worked, so it
     // read as "linear + a little"). 0.4 puts it in the real ~0.1-0.2 V range.
-    double inTrim = 0.4;
+    double inTrim = 0.29;      // user preset
     // master maps speaker VOLTS to digital full scale. The amp puts out
     // ~12-20 V when driven; 0.06 makes a cranked amp reach ~full scale so the
     // amp's OWN power-stage breakup is the tone. (0.5 was ~8x too hot and
     // slammed the output limiter on every note = a 2nd, non-blending clip
     // layer — the "two layers" the user heard.)
-    double master = 0.045;
+    double master = 0.018;     // user preset
                                             // (matched to the hot-reverb
                                             // voicing's output level)
 };
@@ -101,6 +108,8 @@ struct Engine {
         // 18 Hz is below the lowest guitar note so it is tonally transparent.
         ampInHp.highpass(18.0, 0.707, eco_ ? 48000.0 : 96000.0);
         rebuildCab(0);
+        gate_.init(48000.0);
+        chorus_.init(48000.0);
         delay_.init(48000.0);
         roomMic_.init(48000.0);
         eq_.init(48000.0);
@@ -153,7 +162,11 @@ struct Engine {
         plexiAmp.setPresence(c.tremSpeed);
         plexiAmp.setBright(c.tremIntensity);
         if (c.cabKind != ctl.cabKind) rebuildCab(c.cabKind);
-        // post-amp FX
+        // gate + chorus + post-amp FX
+        gate_.setThreshold(c.gateThresh);
+        chorus_.setRate(c.chorusRate);
+        chorus_.setDepth(c.chorusDepth);
+        chorus_.setMix(c.chorusMix);
         delay_.setTimeMs(c.delayMs);
         delay_.setFeedback(c.delayFb);
         delay_.setMix(c.delayMix);
@@ -196,8 +209,11 @@ struct Engine {
         for (int i = 0; i < kChunk48; ++i)
             ipk = std::max(ipk, std::fabs(in[i]));
         inPeak.store(ipk);
-        for (int i = 0; i < kChunk48; ++i)
-            x48[i] = static_cast<double>(in[i]) * ctl.inTrim;
+        for (int i = 0; i < kChunk48; ++i) {
+            double g = static_cast<double>(in[i]);
+            if (ctl.gateOn) g = gate_.process(g);   // noise gate at the front
+            x48[i] = g * ctl.inTrim;
+        }
 
         // ---- pedal slots A -> B (192 k, stiff stages substep internally) ---
         (void)x384;
@@ -237,6 +253,19 @@ struct Engine {
             plexiAmp.processBlock(ampIn, ampOut, ampN);
         if (ampN == kChunk96) ampDn.process(y96, y48, kChunk48);
 
+        // self-heal: if the amp glitched to a non-finite / absurd value on
+        // some transient, scrub it here so it can NEVER latch the output
+        // permanently silent (the amp's own state is physically clamped, this
+        // is the belt-and-suspenders at the block boundary).
+        for (int i = 0; i < kChunk48; ++i) {
+            if (!std::isfinite(y48[i]) || std::fabs(y48[i]) > 2000.0)
+                y48[i] = 0.0;
+        }
+
+        // ---- CE-2 chorus (after amp, before delay) -------------------------
+        if (ctl.chorusOn)
+            for (int i = 0; i < kChunk48; ++i) y48[i] = chorus_.process(y48[i]);
+
         // ---- Boss delay (between amp and cab) ------------------------------
         if (ctl.delayOn)
             for (int i = 0; i < kChunk48; ++i) y48[i] = delay_.process(y48[i]);
@@ -264,7 +293,8 @@ struct Engine {
         float opk = outPeak.load() * 0.95f;
         for (int i = 0; i < kChunk48; ++i) {
             double L, R;
-            roomMic_.process(y48[i], L, R);
+            if (ctl.roomOn) roomMic_.process(y48[i], L, R);
+            else { L = y48[i]; R = y48[i]; }
             if (ctl.eqOn) { L = eq_.step(0, L); R = eq_.step(1, R); }
             L = ceil(L * ctl.master);
             R = ceil(R * ctl.master);
@@ -290,6 +320,8 @@ struct Engine {
     dsp::Down2 ampDn;                  // 96->48 amp output (HQ)
     dsp::Biquad ampInHp;               // amp input DC blocker (18 Hz)
     dsp::Biquad cabHp, cabBump, cabPres, cabLp1, cabLp2;
+    fx::NoiseGate gate_;               // front of chain
+    fx::CE2Chorus chorus_;             // after amp, before delay
     fx::BossDelay delay_;              // between amp and cab
     fx::RoomMic roomMic_;              // stereo studio room mic (tail)
     fx::GraphicEQ eq_;                 // 9-band graphic EQ (very tail)

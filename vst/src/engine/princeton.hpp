@@ -155,6 +155,13 @@ public:
             if (std::fabs(dvp) < 1e-9 && std::fabs(dvk) < 1e-9) break;
         }
 #endif
+        // physical bounds: a real triode plate cannot swing beyond its supply
+        // nor below ~0, and the cathode sits low. Clamping to generous
+        // physical limits stops a diverged Newton (huge grid drive on a
+        // vol-drag transient) from running vp -> 1e10 -> pow() -> inf -> NaN,
+        // which used to latch the whole amp permanently silent.
+        vp = std::clamp(vp, -20.0, B + 100.0);
+        vk = std::clamp(vk, -20.0, 150.0);
         double r1, r2, ip, iC;
         residuals(vp, vk, vg, B, r1, r2, ip, iC);
         if (Ck_ > 0.0) {
@@ -281,10 +288,12 @@ public:
             if (std::fabs(dvp) < 1e-9 && std::fabs(dvk) < 1e-9) break;
         }
 #endif
+        vp = std::clamp(vp, -20.0, B + 100.0);   // physical bounds (anti-NaN)
+        vk = std::clamp(vk, -20.0, 200.0);
         double r1, r2, ip, iCt, iCb;
         residuals(vp, vk, vg, B, r1, r2, ip, iCt, iCb);
-        outT = RL_ * iCt;
-        outB = RL_ * iCb;
+        outT = std::clamp(RL_ * iCt, -400.0, 400.0);
+        outB = std::clamp(RL_ * iCb, -400.0, 400.0);
         qTop_ = vp - outT; iCtPrev_ = iCt;
         qBot_ = vk - outB; iCbPrev_ = iCb;
         vp_ = vp; vk_ = vk;
@@ -344,6 +353,7 @@ public:
             vk -= std::clamp(dvk, -20.0, 20.0);
             if (std::fabs(dvk) < 1e-9) break;
         }
+        vk = std::clamp(vk, -20.0, B_ + 50.0);     // physical bound (anti-NaN)
         vk_ = vk;
         // output coupling cap (trapezoidal) -> AC-coupled cathode signal
         double c = 2.0 * Cc_ / T_;
