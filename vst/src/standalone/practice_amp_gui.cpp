@@ -35,7 +35,7 @@ const Param kParams[23] = {
     {L"Volume", 0, 1, 0.83},      {L"Treble", 0, 1, 0.63},
     {L"Bass", 0, 1, 0.43},        {L"Reverb", 0, 1, 0.15},
     {L"Trem Speed", 0, 1, 0.45},  {L"Trem Intensity", 0, 1, 0.0},
-    {L"Input Trim", 0, 1.0, 0.29},{L"Master", 0, 0.2, 0.018},
+    {L"Input Trim", 0, 1.0, 0.29},{L"Master", 0, 0.2, 0.012},
     {L"Tone", 0, 1, 0.5},         // 10: slot A tone
     {L"Drive", 0, 1, 0.5},        // 11: slot B drive
     {L"Tone", 0, 1, 0.5},         // 12: slot B tone

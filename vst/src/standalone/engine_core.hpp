@@ -68,10 +68,71 @@ struct Controls {
     // amp's OWN power-stage breakup is the tone. (0.5 was ~8x too hot and
     // slammed the output limiter on every note = a 2nd, non-blending clip
     // layer — the "two layers" the user heard.)
-    double master = 0.018;     // user preset
-                                            // (matched to the hot-reverb
-                                            // voicing's output level)
+    // headroom-staged: at 0.018 the output soft-ceiling clipped every accented
+    // hit (peaks pinned at 1.0), crushing the amp's real 9.8 dB dynamics to
+    // 8.7 dB and adding a harsh digital-clip layer — measured on the Suffer DI
+    // (test/render_di). 0.012 lands peaks ~0.76, off the ceiling, so the amp's
+    // OWN dynamics/breakup survive. ~3.5 dB quieter than before (make it up at
+    // the interface/monitor). User picked headroom over loudness.
+    double master = 0.012;
 };
+
+inline std::vector<double> loadCabWav(const char* path);   // fwd (def below)
+
+// Physically-motivated speaker/cab impulse response. Two physical layers:
+//   1) the DRIVER voicing — the same calibrated resonance-HP + cone-breakup
+//      peaks + HF rolloff as the biquad path — rendered to an impulse, so the
+//      tone stays exactly where it was measured/tuned.
+//   2) the CABINET reflection comb — baffle step, the (inverted) back-wall
+//      bounce of a closed 4x12, and the mic off-axis path. This time-domain
+//      comb is precisely what a memoryless biquad cascade CANNOT produce and
+//      is what gives a real cab its "in the room" fingerprint (the kHz notches
+//      you see in every measured guitar-cab IR).
+// Built-in default; drop a measured IR at renders/ir/{c10r,gb212,gb412}.wav to
+// use the real thing (loadCabWav), which is always the higher tier.
+inline std::vector<double> speakerIr(int kind, double fs = 48000.0) {
+    // driver voicing — IDENTICAL params to rebuildCab() so drv-convolution
+    // reproduces the calibrated biquad path bit-for-bit (same tone, same
+    // level); the ONLY new thing this IR adds is the cabinet comb below.
+    dsp::Biquad hp, bump, pres, lp1, lp2;
+    if (kind == 1) {            // Celestion Greenback G12M 2x12, open back
+        hp.highpass(75.0, 0.707, fs);  bump.peaking(120.0, 1.2, 2.5, fs);
+        pres.peaking(2400.0, 1.4, 3.0, fs);
+        lp1.lowpass(5200.0, 0.75, fs); lp2.lowpass(5200.0, 0.75, fs);
+    } else if (kind == 2) {     // Greenback G12M 4x12, closed back
+        hp.highpass(65.0, 0.707, fs);  bump.peaking(100.0, 1.0, 5.0, fs);
+        pres.peaking(2300.0, 1.4, 3.0, fs);
+        lp1.lowpass(4600.0, 0.75, fs); lp2.lowpass(4600.0, 0.75, fs);
+    } else {                    // Jensen C10R 1x10, open back (Princeton)
+        hp.highpass(80.0, 0.707, fs);  bump.peaking(110.0, 1.1, 0.0, fs);
+        pres.peaking(3200.0, 1.4, -4.0, fs);
+        lp1.lowpass(4300.0, 0.707, fs); lp2.lowpass(4300.0, 0.707, fs);
+    }
+    const int N = 1024;
+    std::vector<double> drv(N, 0.0);
+    for (int i = 0; i < N; ++i) {
+        double x = (i == 0) ? 1.0 : 0.0;
+        drv[i] = lp2.step(lp1.step(pres.step(bump.step(hp.step(x)))));
+    }
+    // cabinet reflection comb (time ms, gain). Normalized to unity DC gain
+    // (sum of taps = 1) so it adds spatial comb notches WITHOUT changing the
+    // broadband level — the tone/loudness stays pinned to the calibrated
+    // driver, per 铁律二 (measure, don't drift).
+    struct Tap { double ms, g; };
+    std::vector<Tap> taps;
+    if (kind == 1)      taps = {{0, 1.0}, {0.15, 0.30}, {0.9, -0.20}};
+    else if (kind == 2) taps = {{0, 1.0}, {0.20, 0.35}, {0.8, -0.35}, {1.6, 0.15}};
+    else                taps = {{0, 1.0}, {0.12, 0.25}, {0.5, -0.15}};
+    double gsum = 0; for (auto& t : taps) gsum += t.g;
+    for (auto& t : taps) t.g /= gsum;                   // unity DC
+    std::vector<double> h(N + 128, 0.0);
+    for (auto& t : taps) {
+        int d = static_cast<int>(t.ms * fs / 1000.0);
+        for (int i = 0; i < N; ++i)
+            if (i + d < static_cast<int>(h.size())) h[i + d] += drv[i] * t.g;
+    }
+    return h;
+}
 
 struct Engine {
     // eco: amp core at 48 kHz, OD-1 at 96 kHz (halves CPU). Physically
@@ -97,6 +158,7 @@ struct Engine {
         if (!cabIr.empty()) {
             cabConv.init(cabIr, kChunk48);
             useCabIr = true;
+            userCabIr_ = true;   // explicit override: rebuildCab won't replace it
         }
         // synthetic C10R voicing (only used when no cab IR is loaded). The
         // NFB runs open-loop above 250 Hz (stability compromise) so the raw
@@ -198,6 +260,17 @@ struct Engine {
             cabLp1.lowpass(4300.0, 0.707, 48000.0);
             cabLp2.lowpass(4300.0, 0.707, 48000.0);
         }
+        // primary path = convolution IR. Prefer a measured .wav if the user
+        // dropped one in renders/ir/; else the physical speakerIr() synth.
+        // (the biquad voicing above stays as the no-IR fallback.) If the ctor
+        // was handed an explicit cab IR, that user override wins — leave it.
+        if (userCabIr_) return;
+        static const char* irFiles[3] = {
+            "renders/ir/c10r.wav", "renders/ir/gb212.wav", "renders/ir/gb412.wav"};
+        std::vector<double> ir = loadCabWav(irFiles[k < 0 || k > 2 ? 0 : k]);
+        if (ir.empty()) ir = speakerIr(k, 48000.0);
+        cabConv.init(ir, kChunk48);
+        useCabIr = true;
     }
 
     // one chunk: 128 mono samples in -> stereo (outL,outR) at 48k
@@ -314,6 +387,7 @@ struct Engine {
     dsp::PartConv conv, cabConv;
     bool tankBypass = false;
     bool useCabIr = false;
+    bool userCabIr_ = false;    // ctor was handed an explicit cab IR override
     dsp::Up2 odUp1, odUp2, odUp3;      // 48->96->192->384 into the OD-1
     dsp::Down2 odDn1, odDn2, odDn3;    // 384->192->96->48 out of the OD-1
     dsp::Up2 ampUp;                    // 48->96 amp input (HQ, OD-1 off)
