@@ -20,6 +20,8 @@ proto/*.wav
 proto/*.png
 vst/assets/*.f64
 tank_ir_96k.f64
+vst/renders/*.wav
+vst/renders/probe.wav
 
 # --- python cache ---
 __pycache__/
