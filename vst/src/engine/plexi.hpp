@@ -4,7 +4,9 @@
 // feedback low-pass, PSU sag). The Marshall character vs the Princeton is:
 //   * cascaded high-gain 12AX7 stages (V1 -> V2) => crunch/gain
 //   * brighter, mid-scooped FMV tone stack (Marshall values)
-//   * long-tail-pair phase inverter (approximated by the cathodyne here)
+//   * REAL long-tailed-pair phase inverter (princeton::LTP): gain + built-in
+//     imbalance + asymmetric overdrive, with the OT feedback injected into the
+//     LTP reference grid (the physically-correct Marshall NFB point)
 // Circuit: Rob Robinette's annotated Super Lead schematic (user-provided).
 //
 // Known simplifications (tracked): power tube reuses the 6V6 model (EL34 is a
@@ -95,12 +97,12 @@ public:
           v2_(T12AX7(), fs, 320.0, 100e3, 2700.0, 0.68e-6, 0.022e-6, 1e6),
           cf_(T12AX7(), fs, 320.0, 100e3),      // V2B cathode follower
           tone_(fs, treble, bass, mid),
-          pi_(fs, 320.0),
+          pi_(fs, 400.0),                       // LTP PI on its own B+ node
           // EL34 push-pull, Marshall OT (Raa ~3.4k) + higher B+
           power_(fs, 3400.0, 22.0, 22.0, 40.0, princeton::PEL34(), 470.0, 480.0),
           psu_(fs),
           gain_(gain), master_(master) {
-        double wc = 2.0 * princeton::kPi * 250.0;
+        double wc = 2.0 * princeton::kPi * 8000.0;   // full-band NFB (OT-limited)
         fbA_ = wc / (fs + wc);
         double wp = 2.0 * princeton::kPi * 1900.0;   // presence shelf corner
         prA_ = wp / (fs + wp);
@@ -110,6 +112,8 @@ public:
 
     void setGain(double g) { gain_ = g; }
     void setMaster(double m) { master_ = m; }
+    void setNfb(double s) { nfbScale_ = s; }   // LTP reference-grid feedback
+    double piBias() const { return pi_.vkBias(); }   // debug: LTP cathode V
     void setTone(double t, double b, double m) { tone_.rebuild(fs_, t, b, m); }
     // Presence: on the real amp a 22k pot + 0.1u in the NFB tail shunts HF
     // feedback -> more highs when up. Our PI loop runs open, so the same
@@ -137,12 +141,14 @@ public:
             prLp_ += prA_ * (y - prLp_);
             y = y + presence_ * 1.3 * (y - prLp_);
             double outT, outB;
-            pi_.step(y * 6.0, outT, outB);     // tone-stack makeup into the PI
+            // LTP has real gain (~25), so the makeup is far smaller than the
+            // unity cathodyne's used to be. NFB is injected into the LTP's
+            // reference grid (physically where a Marshall's feedback lands);
+            // full-band like the Princeton fix (OT Cw keeps the loop stable).
+            fbLp_ += fbA_ * (vspk_ - fbLp_);
+            pi_.step(y * 0.30, outT, outB, fbLp_ * nfbScale_);
             double vA, vB;
             psu_.step(power_.iPlates(), power_.iScreens(), vA, vB);
-            fbLp_ += fbA_ * (vspk_ - fbLp_);
-            // (Plexi NFB is lighter than the Fender; injected via PI here is
-            //  folded into the feedback low-pass for stability)
             vspk_ = power_.step(outT, outB, vA, vB);
             out[i] = vspk_;              // raw speaker V; engine applies master
         }
@@ -153,10 +159,17 @@ private:
     princeton::TriodeStage v1_, v2_;
     princeton::CathodeFollower cf_;
     MarshallTone tone_;
-    princeton::Cathodyne pi_;
+    princeton::LTP pi_;                    // real long-tailed-pair PI
     princeton::PowerStage power_;
     princeton::PSU psu_;
     double gain_, master_, vspk_ = 0.0, fbLp_ = 0.0, fbA_ = 0.1;
+    // LTP reference-grid NFB. Sign/amount pinned by test/diag_nfb: NEGATIVE is
+    // real negative feedback (positive self-oscillates -> +0.06 rings at 0.22
+    // RMS); -0.08 gives ~3 dB, a light Marshall-style loop, burst-stable at
+    // both 48k/96k across -0.06..-0.20. Old Plexi computed feedback but never
+    // injected it (ran open-loop) -- the LTP gives it the physically-correct
+    // injection point (the cold grid).
+    double nfbScale_ = -0.08;
     double presence_ = 0.5, bright_ = 0.3;
     double prA_ = 0.1, prLp_ = 0.0, brA_ = 0.1, brHp_ = 0.0;
 };

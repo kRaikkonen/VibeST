@@ -128,6 +128,13 @@ int main(int argc, char** argv) {
         double fc = std::atof(argv[6]);
         if (fc > 0) eng.amp.setFbCutoff(fc);
     }
+    if (argc > 8) {   // amp kind: 0 Princeton, 1 Plexi
+        pa::Controls c = eng.ctl; c.ampKind = std::atoi(argv[8]); eng.apply(c);
+    }
+    if (argc > 9) {   // Plexi LTP NFB scale (signed; find polarity/amount)
+        eng.plexiAmp.setNfb(std::atof(argv[9]));
+        std::printf("plexi LTP bias vk = %.2f V\n", eng.plexiAmp.piBias());
+    }
     // pad to a chunk multiple
     while (in.size() % pa::kChunk48) in.push_back(0.0f);
     std::vector<float> L, R; L.reserve(in.size()); R.reserve(in.size());

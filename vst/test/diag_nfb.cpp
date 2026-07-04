@@ -11,15 +11,17 @@
 #include <vector>
 #include <cmath>
 
-static void probe(bool eco, double fc) {
+static void probe(bool eco, double fc, int ampKind = 0, double plexiNfb = 0.0) {
     pa::Engine eng(pa::springTankIr(eco ? 48000.0 : 96000.0), {}, eco);
     pa::Controls c = eng.ctl;
+    c.ampKind = ampKind;
     c.inTrim = 0.6;          // crank the input hard to stress the loop
     c.volume = 0.95;         // amp volume high
     c.delayOn = false; c.roomOn = false; c.chorusOn = false;  // isolate the amp
     c.eqOn = false;
     eng.apply(c);
-    eng.amp.setFbCutoff(fc);
+    if (ampKind == 0) eng.amp.setFbCutoff(fc);
+    else eng.plexiAmp.setNfb(plexiNfb);
 
     const double fs = 48000;
     int nBurst = (int)(0.10 * fs), nTail = (int)(0.90 * fs);
@@ -57,16 +59,23 @@ static void probe(bool eco, double fc) {
     for (int i = l0; i < (int)out.size(); ++i) { lateRms += (double)out[i]*out[i]; ++nl; }
     lateRms = std::sqrt(lateRms / std::max(1, nl));
     bool finite = std::isfinite(tailRms) && std::isfinite(tailPk);
-    std::printf("%s fc=%6.0f Hz | burstPk %.3f | tailPk %.5f | tailRMS %.6f | lateRMS %.6f | %s%s\n",
-                eco ? "ECO" : "HQ ", fc, burstPk, tailPk, tailRms, lateRms,
-                (lateRms > tailRms * 1.2) ? "GROWING(unstable!)" : "decaying(stable)",
+    char tag[48];
+    if (ampKind == 0) std::snprintf(tag, sizeof tag, "%s Princeton fc=%6.0f", eco?"ECO":"HQ ", fc);
+    else std::snprintf(tag, sizeof tag, "%s Plexi nfb=%+.3f ", eco?"ECO":"HQ ", plexiNfb);
+    std::printf("%s | burstPk %.3f | tailPk %.5f | tailRMS %.6f | lateRMS %.6f | %s%s\n",
+                tag, burstPk, tailPk, tailRms, lateRms,
+                (lateRms > tailRms * 1.2 && tailRms > 1e-4) ? "GROWING(unstable!)" : "decaying(stable)",
                 finite ? "" : " NONFINITE!");
 }
 
 int main() {
     std::printf("NFB tail-decay stability probe (hard burst -> silence):\n");
     for (bool eco : {false, true})
-        for (double fc : {250.0, 1000.0, 2000.0, 5000.0, 8000.0, 20000.0})
+        for (double fc : {250.0, 8000.0, 20000.0})
             probe(eco, fc);
+    std::printf("-- Plexi LTP PI, feedback polarity/amount (neg = real NFB) --\n");
+    for (bool eco : {false, true})
+        for (double nf : {0.0, -0.06, -0.12, -0.20, 0.06})
+            probe(eco, 0.0, 1, nf);
     return 0;
 }

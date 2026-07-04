@@ -342,6 +342,114 @@ private:
     double iCtPrev_ = 0, iCbPrev_ = 0;
 };
 
+// ---- long-tailed-pair phase inverter (Marshall / AB763) ------------------------
+// Two triodes sharing a cathode "tail" resistor to a low reference. V_a takes
+// the signal; V_b is the reference grid (AC ground + NFB inject point). Unlike
+// the cathodyne's unity split-load, the LTP has REAL voltage gain and a
+// deliberate imbalance: RpA != RpB, and the finite tail means the two plate
+// swings differ slightly and the stage overdrives ASYMMETRICALLY — as one side
+// heads to cutoff it dumps its share of the (roughly constant) tail current
+// into the other side. That asymmetry is a signature of the cranked-Marshall
+// phase inverter that a cathodyne physically cannot make. 3-unknown NR
+// (Vpa, Vpb, Vk) per sample; output coupling caps on both plates like the
+// cathodyne. Vtail is calibrated so the quiescent grid bias lands ~-1.8 V
+// (a real, coldish PI point).
+class LTP {
+public:
+    LTP(double fs, double B, double RpA = 82e3, double RpB = 100e3,
+        double Rtail = 10e3, double Vtail = -15.0,
+        double Cc = 0.022e-6, double RL = 220e3)
+        : tube_(T12AX7()), T_(1.0 / fs), B_(B), RpA_(RpA), RpB_(RpB),
+          Rtail_(Rtail), Vtail_(Vtail), Cc_(Cc), RL_(RL) {
+        double vpa = 0.6 * B, vpb = 0.6 * B, vk = 5.0;
+        for (int it = 0; it < 400; ++it) {
+            double r[3]; dcRes(vpa, vpb, vk, r);
+            const double e = 1e-4; double J[3][3], rp[3];
+            dcRes(vpa + e, vpb, vk, rp); for (int q = 0; q < 3; ++q) J[q][0] = (rp[q] - r[q]) / e;
+            dcRes(vpa, vpb + e, vk, rp); for (int q = 0; q < 3; ++q) J[q][1] = (rp[q] - r[q]) / e;
+            dcRes(vpa, vpb, vk + e, rp); for (int q = 0; q < 3; ++q) J[q][2] = (rp[q] - r[q]) / e;
+            double d[3]; if (!solve3(J, r, d)) break;
+            vpa -= std::clamp(d[0], -30.0, 30.0);
+            vpb -= std::clamp(d[1], -30.0, 30.0);
+            vk  -= std::clamp(d[2], -10.0, 10.0);
+            if (std::fabs(d[0]) < 1e-9 && std::fabs(d[1]) < 1e-9 && std::fabs(d[2]) < 1e-9) break;
+        }
+        vpa_ = vpa; vpb_ = vpb; vk_ = vk; qA_ = vpa; qB_ = vpb;
+    }
+
+    double vkBias() const { return vk_; }   // debug: quiescent cathode voltage
+
+    // vgA = signal into the hot grid; vgB = reference grid (0 = AC ground, or
+    // the NFB voltage injected here as on a real Marshall PI).
+    void step(double vgA, double& outT, double& outB, double vgB = 0.0) {
+        double vpa = vpa_, vpb = vpb_, vk = vk_;
+        for (int it = 0; it < 40; ++it) {
+            double r[3]; res(vpa, vpb, vk, vgA, vgB, r);
+            const double e = 1e-5; double J[3][3], rp[3];
+            res(vpa + e, vpb, vk, vgA, vgB, rp); for (int q = 0; q < 3; ++q) J[q][0] = (rp[q] - r[q]) / e;
+            res(vpa, vpb + e, vk, vgA, vgB, rp); for (int q = 0; q < 3; ++q) J[q][1] = (rp[q] - r[q]) / e;
+            res(vpa, vpb, vk + e, vgA, vgB, rp); for (int q = 0; q < 3; ++q) J[q][2] = (rp[q] - r[q]) / e;
+            double d[3]; if (!solve3(J, r, d)) break;
+            vpa -= std::clamp(d[0], -25.0, 25.0);
+            vpb -= std::clamp(d[1], -25.0, 25.0);
+            vk  -= std::clamp(d[2], -10.0, 10.0);
+            if (std::fabs(d[0]) < 1e-8 && std::fabs(d[1]) < 1e-8 && std::fabs(d[2]) < 1e-8) break;
+        }
+        vpa = std::clamp(vpa, -20.0, B_ + 100.0);
+        vpb = std::clamp(vpb, -20.0, B_ + 100.0);
+        vk  = std::clamp(vk, -20.0, 200.0);
+        double cc = 2.0 * Cc_ / T_;
+        double iCa = (cc * (vpa - qA_) - iCaPrev_) / (1.0 + cc * RL_);
+        double iCb = (cc * (vpb - qB_) - iCbPrev_) / (1.0 + cc * RL_);
+        outT = std::clamp(RL_ * iCa, -400.0, 400.0);
+        outB = std::clamp(RL_ * iCb, -400.0, 400.0);
+        qA_ = vpa - outT; iCaPrev_ = iCa;
+        qB_ = vpb - outB; iCbPrev_ = iCb;
+        vpa_ = vpa; vpb_ = vpb; vk_ = vk;
+    }
+
+private:
+    void dcRes(double vpa, double vpb, double vk, double r[3]) const {
+        double ipa = tube_.ip(0.0 - vk, vpa - vk);
+        double ipb = tube_.ip(0.0 - vk, vpb - vk);
+        r[0] = (B_ - vpa) / RpA_ - ipa;
+        r[1] = (B_ - vpb) / RpB_ - ipb;
+        r[2] = ipa + ipb - (vk - Vtail_) / Rtail_;
+    }
+    void res(double vpa, double vpb, double vk, double vgA, double vgB,
+             double r[3]) const {
+        double ipa = tube_.ip(vgA - vk, vpa - vk);
+        double ipb = tube_.ip(vgB - vk, vpb - vk);
+        double cc = 2.0 * Cc_ / T_;
+        double iCa = (cc * (vpa - qA_) - iCaPrev_) / (1.0 + cc * RL_);
+        double iCb = (cc * (vpb - qB_) - iCbPrev_) / (1.0 + cc * RL_);
+        r[0] = (B_ - vpa) / RpA_ - ipa - iCa;
+        r[1] = (B_ - vpb) / RpB_ - ipb - iCb;
+        r[2] = ipa + ipb - (vk - Vtail_) / Rtail_;
+    }
+    static bool solve3(const double J[3][3], const double r[3], double d[3]) {
+        double det = J[0][0]*(J[1][1]*J[2][2]-J[1][2]*J[2][1])
+                   - J[0][1]*(J[1][0]*J[2][2]-J[1][2]*J[2][0])
+                   + J[0][2]*(J[1][0]*J[2][1]-J[1][1]*J[2][0]);
+        if (det == 0.0) return false;
+        double id = 1.0 / det;
+        d[0] = id*(r[0]*(J[1][1]*J[2][2]-J[1][2]*J[2][1])
+                 - J[0][1]*(r[1]*J[2][2]-J[1][2]*r[2])
+                 + J[0][2]*(r[1]*J[2][1]-J[1][1]*r[2]));
+        d[1] = id*(J[0][0]*(r[1]*J[2][2]-J[1][2]*r[2])
+                 - r[0]*(J[1][0]*J[2][2]-J[1][2]*J[2][0])
+                 + J[0][2]*(J[1][0]*r[2]-r[1]*J[2][0]));
+        d[2] = id*(J[0][0]*(J[1][1]*r[2]-r[1]*J[2][1])
+                 - J[0][1]*(J[1][0]*r[2]-r[1]*J[2][0])
+                 + r[0]*(J[1][0]*J[2][1]-J[1][1]*J[2][0]));
+        return true;
+    }
+    Triode tube_;
+    double T_, B_, RpA_, RpB_, Rtail_, Vtail_, Cc_, RL_;
+    double vpa_ = 0, vpb_ = 0, vk_ = 0, qA_ = 0, qB_ = 0;
+    double iCaPrev_ = 0, iCbPrev_ = 0;
+};
+
 // ---- cathode follower (Marshall V2B tone-stack buffer) -------------------------
 // Triode with the output taken from the cathode: gain ~0.9, low output Z, and
 // an ASYMMETRIC soft compression -- on a big positive swing the grid pulls the
