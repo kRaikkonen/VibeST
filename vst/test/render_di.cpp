@@ -156,6 +156,13 @@ int main(int argc,char**argv){
     if(nfb>0)eng.amp.setFbCutoff(nfb);
     double otd=getf("otdamp",-1);
     if(otd>=0){ if(ampKind==1)eng.plexiAmp.setOtDamp(otd); else eng.amp.setOtDamp(otd); }
+    int flat=(int)getf("flatload",0);
+    if(flat){ if(ampKind==1)eng.plexiAmp.setFlatLoad(true); else eng.amp.setFlatLoad(true); }
+    double otbw=getf("otbw",-1);
+    if(otbw>0){ if(ampKind==1)eng.plexiAmp.setOtBw(otbw); else eng.amp.setOtBw(otbw); }
+    double nfbs=getf("nfbscale",-99);
+    if(nfbs>-99){ if(ampKind==1)eng.plexiAmp.setNfb(nfbs); else eng.amp.setNfb(nfbs); }
+    int tapsel=(int)getf("tapsel",0); if(tapsel>0)eng.amp.setTapSel(tapsel);
     if(!grid)eng.amp.enableGridBlock(false);
     if(!cabir)eng.forceNoIR();
     if(ampKind==1)eng.plexiAmp.setNfb(plexinfb);

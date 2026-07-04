@@ -29,7 +29,9 @@ def read_wav_mono(path, want_sr=SR, start=0.0, dur=8.0):
     v=v.reshape(-1,ch).mean(1)
     s0=int(start*sr); s1=min(len(v), s0+int(dur*sr)); v=v[s0:s1]
     if sr!=want_sr:
-        x=np.arange(len(v)); xi=np.arange(0,len(v),sr/want_sr); v=np.interp(xi,x,v)
+        from scipy.signal import resample_poly
+        from math import gcd
+        g=gcd(int(want_sr),int(sr)); v=resample_poly(v,int(want_sr)//g,int(sr)//g)  # proper polyphase
     return v.astype(np.float32)
 
 def write_wav_f32(path, x):

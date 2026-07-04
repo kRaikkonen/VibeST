@@ -547,6 +547,13 @@ public:
     double iPlates() const { return iPlates_; }
     double iScreens() const { return iScreens_; }
     void setRw(double rw) { Rw_ = rw; gcw_ = (Cw_ / T_) / (1.0 + Rw_ * Cw_ / T_); }
+    // flatLoad: drive a RESISTIVE reference load (like a NAM head's load box)
+    // instead of the reactive speaker impedance -> the amp output is a flat
+    // "head" (the speaker's coloration belongs entirely in the cab IR, not
+    // baked into the head twice). setOtBw: the OT/leakage HF bandwidth.
+    void setFlatLoad(bool b) { flatLoad_ = b; }
+    void setOtBw(double hz) { double wl = 2.0 * kPi * hz;
+        lkB_ = wl * T_ / (2.0 + wl * T_); lkA_ = (2.0 - wl * T_) / (2.0 + wl * T_); }
 
     double step(double vg1ac, double vg2ac, double vA, double vB,
                 double biasMod = 0.0) {
@@ -559,7 +566,13 @@ public:
         double c2 = (2 * Cmes_ / T_) * spk_[1]
                     + (spk_[0] - spk_[1] / Rres_ - spk_[2]);
         double c3 = (2 * Lces_ / T_) * spk_[2] + spk_[1];
-        double ih0 = Ainv_[0][0] * c1 + Ainv_[0][1] * c2 + Ainv_[0][2] * c3;
+        double ih0 = flatLoad_ ? 0.0
+                     : (Ainv_[0][0] * c1 + Ainv_[0][1] * c2 + Ainv_[0][2] * c3);
+        // flat load: the RESISTIVE reference conductance (a real ~8 ohm load
+        // box), not geq_ which is only the reactive network's HF-limit value
+        // (~160 ohm = a near-unloaded OT that then rings). Loading the OT
+        // properly damps the Lm-Cw resonance.
+        double gL = flatLoad_ ? gRef_ : geq_;
         double vaaOld = vaa_;
         double vaa = vaaOld, lo = -2.2 * vA, hi = 2.2 * vA;
 #ifdef PA_FAST_JACOBIAN
@@ -571,7 +584,7 @@ public:
             return e1 <= 0.0 ? 0.0 : std::pow(e1, tube_.EX);
         };
         const double core1 = coreOf(g1), core2 = coreOf(g2);
-        const double gLin = T_ / (2 * Lm_) + geq_ / (4 * m_ * m_)
+        const double gLin = T_ / (2 * Lm_) + gL / (4 * m_ * m_)
                             + gcw_;   // Cw: series-Rw-damped (see members)
         auto Fres = [&](double v, double& dF) {
             double vp1 = std::max(vA - 0.5 * v, 0.5);
@@ -584,7 +597,7 @@ public:
                 / (tube_.KVB * (1.0 + (vp2 / tube_.KVB) * (vp2 / tube_.KVB)));
             dF = -0.5 * da1 - 0.5 * da2 - gLin;
             double iLn = iL_ + (T_ / (2 * Lm_)) * (v + vaaOld);
-            double is = geq_ * v / (2 * m_) + ih0;
+            double is = gL * v / (2 * m_) + ih0;
             double iCw = gcw_ * (v - vCwPrev_);   // series-Rw-damped Cw branch
             return (i1_ - i2_) - iLn - is / (2 * m_) - iCw;
         };
@@ -608,7 +621,7 @@ public:
             tube_.currents(g1, vB, std::max(vA - 0.5 * v, 0.5), i1, s1);
             tube_.currents(g2, vB, std::max(vA + 0.5 * v, 0.5), i2, s2);
             double iLn = iL_ + (T_ / (2 * Lm_)) * (v + vaaOld);
-            double is = geq_ * v / (2 * m_) + ih0;
+            double is = gL * v / (2 * m_) + ih0;
             double iCw = gcw_ * (v - vCwPrev_);   // series-Rw-damped Cw branch
             return (i1 - i2) - iLn - is / (2 * m_) - iCw;
         };
@@ -678,6 +691,8 @@ private:
     // backward-Euler conductance; vCwPrev_ is the cap voltage (smooth, so no
     // Nyquist ring). Rw sized ~ Cw's reactance at the resonance for Q<1.
     double Rw_ = 33e3, gcw_ = 0.0, vCwPrev_ = 0.0;
+    bool flatLoad_ = false;   // resistive load-box mode (speaker -> cab IR)
+    double gRef_ = 0.125;     // flat-load reference conductance (~8 ohm box)
     double iPlates_ = 0, iScreens_ = 0;
     double lkB_, lkA_, lkX1_ = 0, lkY1_ = 0;
     double vbSup_ = 400.0, vpSup_ = 410.0;
@@ -925,6 +940,8 @@ public:
     double v3bBlock() const { return v3b_.vBlock(); }
     void enableGridBlock(bool on) { v1a_.gridBlockOn(on); v3b_.gridBlockOn(on); }
     void setOtDamp(double rw) { power_.setRw(rw); }   // OT Cw damping (anti-osc)
+    void setFlatLoad(bool b) { power_.setFlatLoad(b); }
+    void setOtBw(double hz) { power_.setOtBw(hz); }
     void setFbCutoff(double fc) { fbA_ = 2.0*kPi*fc / (fs_ + 2.0*kPi*fc); }
     void setTremolo(double speed, double intensity) {
         c_.tremSpeed = speed; c_.tremIntensity = intensity;
@@ -935,6 +952,8 @@ public:
 
     double tap[7] = {0};   // debug stage-peak taps (v1a,stack,v1b,vg,v3b,PI,spk)
     double dbgVA = 0, dbgVB = 0;   // last PSU rail voltages (debug)
+    int tapSel_ = 0;       // debug: output stage k (1=v1a..6=PI,7/0=spk)
+    void setTapSel(int k) { tapSel_ = k; }
 
     // process one block; scratch buffers sized to n by caller
     void processBlock(const double* in, double* out, int n,
@@ -946,6 +965,9 @@ public:
             tap[0] = std::max(tap[0], std::fabs(a));
             tap[1] = std::max(tap[1], std::fabs(s));
             tap[2] = std::max(tap[2], std::fabs(v1bBuf[i]));
+            if (tapSel_ == 1) out[i] = a;
+            else if (tapSel_ == 2) out[i] = s;
+            else if (tapSel_ == 3) out[i] = v1bBuf[i];
         }
         for (int i = 0; i < n; ++i)
             drvBuf[i] = v2_.step(revHp_.step(v1bBuf[i])) * tankSendK_;
@@ -973,7 +995,9 @@ public:
             vspk2_ = vspk_;
             vspk_ = power_.step(outT, outB, vA, vB, trem);
             tap[6] = std::max(tap[6], std::fabs(vspk_));
-            out[i] = vspk_;
+            out[i] = (tapSel_ == 4) ? vg : (tapSel_ == 5) ? v3bOut
+                     : (tapSel_ == 6) ? outT
+                     : (tapSel_ >= 1 && tapSel_ <= 3) ? out[i] : vspk_;
         }
     }
 

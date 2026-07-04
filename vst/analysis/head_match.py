@@ -25,24 +25,26 @@ def fr(sig,seg):
     # robust voicing = Welch average PSD on the DI segment (real playing);
     # transients/hum spikes average out, unlike the sweep out/in ratio.
     a0,a1=meta[seg]; s=sig[a0:a1]
-    f,P=welch(s,SR,nperseg=8192,noverlap=4096)
+    f,P=welch(s,SR,nperseg=16384,noverlap=12288)
     return f, np.sqrt(P)
 def smooth_db(f,H,pts):
     out=[]
     for fq in pts:
-        lo,hi=fq/2**(1/6),fq*2**(1/6); m=(f>=lo)&(f<=hi)
-        out.append(20*np.log10(np.mean(H[m])+1e-12))
+        lo,hi=fq/2**(1/24),fq*2**(1/24); m=(f>=lo)&(f<=hi)
+        val=np.mean(H[m]) if m.any() else H[np.argmin(np.abs(f-fq))]
+        out.append(20*np.log10(val+1e-12))
     return np.array(out)
-pts=np.geomspace(50,12000,60)
-f,Hn=fr(nam,"di"); _,Hm=fr(my,"di")
-dn=smooth_db(f,Hn,pts); dm=smooth_db(f,Hm,pts)
-k1=np.argmin(np.abs(pts-1000)); dn-=dn[k1]; dm-=dm[k1]   # normalise @1kHz
+pts=np.geomspace(50,16000,300)
+f,Hn=fr(nam,"di"); _,Hm=fr(my,"di"); _,Hx=fr(x,"di")   # +input DI itself
+dn=smooth_db(f,Hn,pts); dm=smooth_db(f,Hm,pts); dx=smooth_db(f,Hx,pts)
+k1=np.argmin(np.abs(pts-1000)); dn-=dn[k1]; dm-=dm[k1]; dx-=dx[k1]   # normalise @1kHz
 band=(pts>=100)&(pts<=6000); gap=np.mean(np.abs(dm-dn)[band])
 print(f"HEAD freq-response mean |diff| 100-6kHz = {gap:.1f} dB  (ballpark target < ~3 dB)")
 for fq in [80,160,320,640,1200,2400,4800]:
     kk=np.argmin(np.abs(pts-fq)); print(f"  {fq:>5}Hz  NAM {dn[kk]:+5.1f}  MINE {dm[kk]:+5.1f}  diff {dm[kk]-dn[kk]:+5.1f}")
 
 fig,ax=plt.subplots(2,1,figsize=(11,8))
+ax[0].semilogx(pts,dx,label="INPUT DI (raw)",lw=1,color='green',alpha=.5)
 ax[0].semilogx(pts,dn,label="NAM head (real Princeton Clean V4T4)",lw=2)
 ax[0].semilogx(pts,dm,label="MY head",lw=2)
 ax[0].set_title(f"HEAD voicing: DI avg spectrum (norm @1kHz)  |  mean gap 100-6k = {gap:.1f} dB")
