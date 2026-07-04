@@ -20,7 +20,9 @@
 // output "pops and collapses" when drive/master are pushed (field report).
 // The FD solver below is the one validated against the Radau references.
 #include "../engine/od1.hpp"
+#include "../engine/pedals.hpp"
 #include "../engine/princeton.hpp"
+#include "../engine/plexi.hpp"
 #include "../engine/dsp.hpp"
 
 namespace pa {
@@ -28,14 +30,26 @@ namespace pa {
 constexpr int kChunk48 = 128;               // processing chunk at device rate
 constexpr int kChunk96 = 2 * kChunk48;      // = spring-conv partition size
 constexpr int kChunk192 = 4 * kChunk48;
+constexpr int kChunk384 = 8 * kChunk48;     // OD-1 runs here (its valid rate)
 
 struct Controls {
-    bool odOn = true;
-    double odDrive = 0.5, odLevel = 0.8;
+    bool odOn = false;              // pedal off by default (amp-only default)
+    int pedalKind = 0;              // 0 OD-1, 1 SD-1, 2 TS-808, 3 Mad Red
+    int ampKind = 0;                // 0 Princeton Reverb, 1 Marshall Plexi
+    double odDrive = 0.6, odLevel = 0.35, odTone = 0.5;  // enough gain to clip
     double volume = 0.4, treble = 0.55, bass = 0.5, reverb = 0.25;
     double tremSpeed = 0.45, tremIntensity = 0.0;
-    double inTrim = 0.15;                   // full-scale -> volts at input
-    double master = 0.025;                  // speaker volts -> full-scale
+    // full-scale digital -> volts at the input jack. A real guitar sits at
+    // ~0.1-0.25 V; 0.15 mapped a typical picked note to only ~30-60 mV, far
+    // too weak to drive the OD-1 into real clipping (it barely worked, so it
+    // read as "linear + a little"). 0.4 puts it in the real ~0.1-0.2 V range.
+    double inTrim = 0.4;
+    // master maps speaker VOLTS to digital full scale. The amp puts out
+    // ~12-20 V when driven; 0.06 makes a cranked amp reach ~full scale so the
+    // amp's OWN power-stage breakup is the tone. (0.5 was ~8x too hot and
+    // slammed the output limiter on every note = a 2nd, non-blending clip
+    // layer — the "two layers" the user heard.)
+    double master = 0.045;
                                             // (matched to the hot-reverb
                                             // voicing's output level)
 };
@@ -48,7 +62,13 @@ struct Engine {
            bool eco_ = false)
         : eco(eco_),
           ampChunk(eco_ ? kChunk48 : kChunk96),
-          pedal(eco_ ? 96000.0 : 192000.0, 0.5, 0.8, od1::RC3403A()),
+          // OD-1 pedal at 192 k with its stiff stages (clipper + filter op-amp)
+          // internally substepping 2x -> effective 384 k where it matters, at
+          // roughly half the cost of running the whole pedal at 384 k. Verified
+          // to match the 384 k reference sample-for-sample (diag_od1).
+          pedal(192000.0, 0.5, 0.8, od1::RC3403A(), od1::Params{}, 2),
+          fxPedal(pedals::Kind::SD1, 192000.0, 0.6, 0.35, 0.5, 2),
+          plexiAmp(eco_ ? 48000.0 : 96000.0, 0.6, 0.6, 0.4, 0.5, 1.0),
           amp(eco_ ? 48000.0 : 96000.0, princeton::AmpControls{},
               makeTank()) {
         if (!tankIr.empty()) conv.init(tankIr, ampChunk);
@@ -57,13 +77,20 @@ struct Engine {
             cabConv.init(cabIr, kChunk48);
             useCabIr = true;
         }
-        // monitor voicing rolled back to the original (user preference):
-        // plain 75 Hz HP + 5.5 kHz LP x2, no bump/presence peaking
-        cabHp.highpass(75.0, 0.707, 48000.0);
+        // synthetic C10R voicing (only used when no cab IR is loaded). The
+        // NFB runs open-loop above 250 Hz (stability compromise) so the raw
+        // amp is bright; a real 10" guitar speaker rolls off hard past ~4 kHz
+        // and dips the 3 kHz "ice pick", which also tames that brightness.
+        // amp input coupling / DC blocker: the OD-1's asymmetric clipping
+        // leaves a DC + subsonic component that shifts the amp bias and makes
+        // it fart / "broken speaker". Real amps AC-couple their input jack;
+        // 18 Hz is below the lowest guitar note so it is tonally transparent.
+        ampInHp.highpass(18.0, 0.707, eco_ ? 48000.0 : 96000.0);
+        cabHp.highpass(80.0, 0.707, 48000.0);
         cabBump.peaking(110.0, 1.1, 0.0, 48000.0);
-        cabPres.peaking(2600.0, 1.0, 0.0, 48000.0);
-        cabLp1.lowpass(5500.0, 0.707, 48000.0);
-        cabLp2.lowpass(5500.0, 0.707, 48000.0);
+        cabPres.peaking(3200.0, 1.4, -4.0, 48000.0);   // presence dip
+        cabLp1.lowpass(4300.0, 0.707, 48000.0);
+        cabLp2.lowpass(4300.0, 0.707, 48000.0);
         apply(Controls{});
     }
 
@@ -84,17 +111,34 @@ struct Engine {
     }
 
     void apply(const Controls& c) {
-        pedal.setDrive(c.odDrive);
-        pedal.setLevel(c.odLevel);
+        if (c.pedalKind != ctl.pedalKind && c.pedalKind != 0) {
+            static const pedals::Kind kinds[] = {
+                pedals::Kind::OD1, pedals::Kind::SD1,
+                pedals::Kind::TS808, pedals::Kind::MadRed};
+            fxPedal = pedals::Pedal(kinds[c.pedalKind], 192000.0,
+                                    c.odDrive, c.odLevel, c.odTone, 2);
+        }
+        if (c.pedalKind == 0) {
+            pedal.setDrive(c.odDrive);
+            pedal.setLevel(c.odLevel);
+        } else {
+            fxPedal.setDrive(c.odDrive);
+            fxPedal.setLevel(c.odLevel);
+            fxPedal.setTone(c.odTone);
+        }
         amp.setTone(c.treble, c.bass, c.volume);
         amp.setReverb(c.reverb);
         amp.setTremolo(c.tremSpeed, c.tremIntensity);
+        // Marshall Plexi: Volume slider = Gain, Treble/Bass = tone, the
+        // Reverb slider is repurposed as the Mid control (Plexi has no reverb)
+        plexiAmp.setGain(c.volume);
+        plexiAmp.setTone(c.treble, c.bass, c.reverb);
         ctl = c;
     }
 
     // one chunk: 128 mono samples in/out at 48k
     void processChunk(const float* in, float* out) {
-        double x48[kChunk48], x96[kChunk96], x192[kChunk192];
+        double x48[kChunk48], x96[kChunk96], x192[kChunk192], x384[kChunk384];
         double b1[kChunk96], b2[kChunk96], b3[kChunk96], y96[kChunk96];
         double y48[kChunk48];
         float ipk = inPeak.load() * 0.95f;
@@ -103,25 +147,38 @@ struct Engine {
         inPeak.store(ipk);
         for (int i = 0; i < kChunk48; ++i)
             x48[i] = static_cast<double>(in[i]) * ctl.inTrim;
-        if (eco) {
-            if (ctl.odOn) {
-                up48to96.process(x48, x96, kChunk48);
-                for (int i = 0; i < kChunk96; ++i)
-                    x96[i] = pedal.step(x96[i]);
-                down96to48.process(x96, x48, kChunk48);
-            }
-            amp.processBlock(x48, y48, kChunk48, b1, b2, b3);
+
+        // ---- OD-1 pedal (192 k, stiff stages substep internally) -----------
+        (void)x384;
+        double* ampIn;
+        int ampN;
+        if (ctl.odOn) {
+            odUp1.process(x48, x96, kChunk48);
+            odUp2.process(x96, x192, kChunk96);
+            if (ctl.pedalKind == 0)
+                for (int i = 0; i < kChunk192; ++i) x192[i] = pedal.step(x192[i]);
+            else
+                for (int i = 0; i < kChunk192; ++i) x192[i] = fxPedal.step(x192[i]);
+            odDn2.process(x192, x96, kChunk96);
+            if (eco) { odDn3.process(x96, x48, kChunk48); ampIn = x48; ampN = kChunk48; }
+            else     { ampIn = x96; ampN = kChunk96; }
+        } else if (eco) {
+            ampIn = x48; ampN = kChunk48;
         } else {
-            up48to96.process(x48, x96, kChunk48);
-            if (ctl.odOn) {
-                up96to192.process(x96, x192, kChunk96);
-                for (int i = 0; i < kChunk192; ++i)
-                    x192[i] = pedal.step(x192[i]);
-                down192to96.process(x192, x96, kChunk96);
-            }
-            amp.processBlock(x96, y96, kChunk96, b1, b2, b3);
-            down96to48.process(y96, y48, kChunk48);
+            ampUp.process(x48, x96, kChunk48);
+            ampIn = x96; ampN = kChunk96;
         }
+
+        // ---- power amp (Princeton or Plexi), then down to 48 k -------------
+        for (int i = 0; i < ampN; ++i) ampIn[i] = ampInHp.step(ampIn[i]);
+        double* ampOut = (ampN == kChunk48) ? y48 : y96;
+        if (ctl.ampKind == 0)
+            amp.processBlock(ampIn, ampOut, ampN, b1, b2, b3);
+        else
+            plexiAmp.processBlock(ampIn, ampOut, ampN);
+        if (ampN == kChunk96) ampDn.process(y96, y48, kChunk48);
+
+        // ---- cab (IR or synthetic voicing) + master ------------------------
         if (useCabIr) {
             double yc[kChunk48];
             cabConv.process(y48, yc);
@@ -131,11 +188,18 @@ struct Engine {
                 y48[i] = cabLp2.step(cabLp1.step(
                     cabPres.step(cabBump.step(cabHp.step(y48[i])))));
         }
+        // soft output ceiling with a linear region: a hard clamp turns an
+        // over-driven signal into a harsh digital square ("broken speaker").
+        // Below 0.9 it is exactly linear (the approved clean tone is
+        // untouched); above 0.9 it saturates smoothly to a 1.0 ceiling.
         float opk = outPeak.load() * 0.95f;
         for (int i = 0; i < kChunk48; ++i) {
-            double y = y48[i] * ctl.master;
-            out[i] = static_cast<float>(y < -1.0 ? -1.0 : (y > 1.0 ? 1.0 : y));
-            opk = std::max(opk, std::fabs(out[i]));
+            double a = y48[i] * ctl.master;
+            double s = std::fabs(a);
+            if (s > 0.95)   // safety only — the amp should do the clipping
+                a = std::copysign(0.95 + 0.05 * std::tanh((s - 0.95) / 0.05), a);
+            out[i] = static_cast<float>(a);
+            opk = std::max(opk, static_cast<float>(std::fabs(a)));
         }
         outPeak.store(opk);
     }
@@ -143,12 +207,17 @@ struct Engine {
     bool eco;
     int ampChunk;
     od1::Pedal pedal;
+    pedals::Pedal fxPedal;         // SD-1 / TS-808 / Mad Red (reconstructed)
     princeton::Amp amp;
+    plexi::Amp plexiAmp;           // Marshall Super Lead Plexi
     dsp::PartConv conv, cabConv;
     bool tankBypass = false;
     bool useCabIr = false;
-    dsp::Up2 up48to96, up96to192;
-    dsp::Down2 down192to96, down96to48;
+    dsp::Up2 odUp1, odUp2, odUp3;      // 48->96->192->384 into the OD-1
+    dsp::Down2 odDn1, odDn2, odDn3;    // 384->192->96->48 out of the OD-1
+    dsp::Up2 ampUp;                    // 48->96 amp input (HQ, OD-1 off)
+    dsp::Down2 ampDn;                  // 96->48 amp output (HQ)
+    dsp::Biquad ampInHp;               // amp input DC blocker (18 Hz)
     dsp::Biquad cabHp, cabBump, cabPres, cabLp1, cabLp2;
     Controls ctl;
     std::mutex mtx;
@@ -168,6 +237,11 @@ struct Engine {
     std::atomic<int> loadPct{0};    // EMA of engine time / realtime budget
     std::atomic<float> inPeak{0.0f}, outPeak{0.0f};   // level meters
     std::atomic<int> drops{0};      // resync events (audible clicks) counter
+    double dbgX96 = 0, dbgY96 = 0;  // debug: amp in/out peak
+    double dbgY96sq = 0, dbgXdc = 0, dbgY48 = 0, dbgYcab = 0, dbgYcabSq = 0;
+    double dbgY48Sq = 0;
+    long dbgN = 0;
+    std::vector<double> dbgCap;   // capture of y48 for offline FFT
 };
 
 inline void dataCallback(ma_device* dev, void* pOut, const void* pIn,

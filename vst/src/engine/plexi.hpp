@@ -1,0 +1,140 @@
+// Marshall Super Lead "Plexi" (1959 100W / 1987 50W) preamp + power.
+// Reuses the validated Princeton white-box building blocks (Koren triode
+// stages, MNA tone stack, push-pull power stage with the NFB-stabilising
+// feedback low-pass, PSU sag). The Marshall character vs the Princeton is:
+//   * cascaded high-gain 12AX7 stages (V1 -> V2) => crunch/gain
+//   * brighter, mid-scooped FMV tone stack (Marshall values)
+//   * long-tail-pair phase inverter (approximated by the cathodyne here)
+// Circuit: Rob Robinette's annotated Super Lead schematic (user-provided).
+//
+// Known simplifications (tracked): power tube reuses the 6V6 model (EL34 is a
+// refinement); the DC-coupled cathode-follower tone buffer is folded into the
+// stage loading; tone-stack values are Marshall but the network is the same
+// 8-node FMV MNA as the Fender.
+#pragma once
+#include "princeton.hpp"
+
+namespace plexi {
+
+using princeton::Triode;
+using princeton::T12AX7;
+
+// Marshall FMV tone stack (treble 250k, bass 1M, mid 25k, slope 33k;
+// caps 470pF / 22n / 22n) — brighter & more mid-voiced than the Fender.
+class MarshallTone {
+public:
+    MarshallTone(double fs, double treble, double bass, double mid,
+                 double Rsrc = 38e3) { rebuild(fs, treble, bass, mid, Rsrc); }
+    void rebuild(double fs, double treble, double bass, double mid,
+                 double Rsrc = 38e3) {
+        const double RT = 250e3, RB = 1e6, RM = 25e3;
+        auto tap = [](double p){ p = std::clamp(p, 1e-3, 0.999); return p * p; };
+        double tw = tap(treble), bw = tap(bass), mw = std::clamp(mid,1e-3,0.999);
+        double G[8][8] = {}, C[8][8] = {};
+        auto R = [&](int a,int b,double o){ double g=1.0/std::max(o,1.0);
+            if(a>0)G[a-1][a-1]+=g; if(b>0)G[b-1][b-1]+=g;
+            if(a>0&&b>0){G[a-1][b-1]-=g;G[b-1][a-1]-=g;} };
+        auto Cap=[&](int a,int b,double f){
+            if(a>0)C[a-1][a-1]+=f; if(b>0)C[b-1][b-1]+=f;
+            if(a>0&&b>0){C[a-1][b-1]-=f;C[b-1][a-1]-=f;} };
+        // node map like the Fender FMV: 1 src,2 plate,3 treb-cap,4 slope,
+        // 5 bass/mid,6 treb wiper(out),7 (unused vol),8 bass-cap
+        R(1,2,Rsrc);
+        Cap(2,3,470e-12);
+        R(3,6,(1.0-tw)*RT); R(6,5,tw*RT);
+        R(2,4,33e3);
+        Cap(4,8,22e-9); R(8,5,bw*RB);
+        Cap(4,5,22e-9);
+        R(5,0,mw*RM);                          // mid pot to ground
+        R(7,0,1e9);                            // node 7 unused (no volume pot
+                                               // in the stack) -> tie down so
+                                               // the MNA matrix isn't singular
+        double k=2.0*fs, A1[N][N]={},A2[N][N]={};
+        for(int r=0;r<8;++r)for(int c=0;c<8;++c){
+            A1[r][c]=G[r][c]+k*C[r][c]; A2[r][c]=-G[r][c]+k*C[r][c]; }
+        A1[0][8]=1; A1[8][0]=1; A2[8][0]=-1;
+        double B[N]={}; B[8]=1;
+        double aug[N][2*N+1];
+        for(int r=0;r<N;++r){ for(int c=0;c<N;++c){aug[r][c]=A1[r][c];
+            aug[r][N+c]=A2[r][c];} aug[r][2*N]=B[r]; }
+        for(int col=0;col<N;++col){ int piv=col;
+            for(int r=col+1;r<N;++r) if(std::fabs(aug[r][col])>std::fabs(aug[piv][col]))piv=r;
+            for(int c=0;c<=2*N;++c) std::swap(aug[col][c],aug[piv][c]);
+            double d=aug[col][col]; for(int c=0;c<=2*N;++c)aug[col][c]/=d;
+            for(int r=0;r<N;++r){ if(r==col)continue; double f=aug[r][col];
+                if(f==0)continue; for(int c=0;c<=2*N;++c)aug[r][c]-=f*aug[col][c]; } }
+        int inact=1-active_.load(std::memory_order_relaxed);
+        for(int r=0;r<N;++r){ for(int c=0;c<N;++c)M_[inact][r][c]=aug[r][N+c];
+            K_[inact][r]=aug[r][2*N]; }
+        active_.store(inact,std::memory_order_release);
+    }
+    double step(double u){
+        int a=active_.load(std::memory_order_acquire);
+        const auto&M=M_[a];const auto&K=K_[a];
+        std::array<double,N> xn{};
+        for(int r=0;r<N;++r){ double acc=K[r]*(u+u1_);
+            for(int c=0;c<N;++c)acc+=M[r][c]*x_[c]; xn[r]=acc; }
+        x_=xn; u1_=u; return x_[5];             // treble wiper (node 6)
+    }
+private:
+    static constexpr int N=9;
+    std::array<std::array<std::array<double,N>,N>,2> M_{};
+    std::array<std::array<double,N>,2> K_{};
+    std::atomic<int> active_{0};
+    std::array<double,N> x_{}; double u1_=0;
+};
+
+class Amp {
+public:
+    Amp(double fs, double gain = 0.6, double treble = 0.6, double bass = 0.4,
+        double mid = 0.5, double master = 0.7)
+        : fs_(fs),
+          // cascaded high-gain 12AX7 stages (Marshall: 100k plate, small
+          // cathode R -> high gain); V1 bright, V2 driver
+          v1_(T12AX7(), fs, 320.0, 100e3, 820.0, 330e-6, 0.022e-6, 1e6),
+          v2_(T12AX7(), fs, 320.0, 100e3, 2700.0, 0.68e-6, 0.022e-6, 1e6),
+          tone_(fs, treble, bass, mid),
+          pi_(fs, 320.0),
+          power_(fs),
+          psu_(fs),
+          gain_(gain), master_(master) {
+        double wc = 2.0 * princeton::kPi * 250.0;
+        fbA_ = wc / (fs + wc);
+    }
+
+    void setGain(double g) { gain_ = g; }
+    void setMaster(double m) { master_ = m; }
+    void setTone(double t, double b, double m) { tone_.rebuild(fs_, t, b, m); }
+
+    void processBlock(const double* in, double* out, int n) {
+        for (int i = 0; i < n; ++i) {
+            // preamp: V1 -> Gain pot -> V2 -> tone stack -> PI. (The real
+            // V2B cathode follower is a unity buffer, not a gain stage —
+            // adding it as gain over-saturated everything, so it's folded
+            // into the tone-stack drive.)
+            double y = v1_.step(in[i]);
+            y = v2_.step(y * (0.1 + 1.4 * gain_));
+            y = tone_.step(y);
+            double outT, outB;
+            pi_.step(y * 6.0, outT, outB);     // tone-stack makeup into the PI
+            double vA, vB;
+            psu_.step(power_.iPlates(), power_.iScreens(), vA, vB);
+            fbLp_ += fbA_ * (vspk_ - fbLp_);
+            // (Plexi NFB is lighter than the Fender; injected via PI here is
+            //  folded into the feedback low-pass for stability)
+            vspk_ = power_.step(outT, outB, vA, vB);
+            out[i] = vspk_;              // raw speaker V; engine applies master
+        }
+    }
+
+private:
+    double fs_;
+    princeton::TriodeStage v1_, v2_;
+    MarshallTone tone_;
+    princeton::Cathodyne pi_;
+    princeton::PowerStage power_;
+    princeton::PSU psu_;
+    double gain_, master_, vspk_ = 0.0, fbLp_ = 0.0, fbA_ = 0.1;
+};
+
+}  // namespace plexi

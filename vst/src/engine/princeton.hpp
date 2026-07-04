@@ -6,6 +6,7 @@
 #pragma once
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <functional>
 #include <vector>
@@ -601,17 +602,27 @@ public:
                 for (int c = 0; c <= 2 * N; ++c) aug[r][c] -= f * aug[col][c];
             }
         }
+        // write into the INACTIVE buffer, then atomically flip. This makes
+        // rebuild() safe to call from the UI thread without the audio lock:
+        // the audio thread always reads a complete, consistent coeff set.
+        // (Rebuilding under the audio lock while dragging a pot starved the
+        // callback -> "mush" then ASIO overflow.)
+        int inactive = 1 - active_.load(std::memory_order_relaxed);
         for (int r = 0; r < N; ++r) {
-            for (int c = 0; c < N; ++c) M_[r][c] = aug[r][N + c];
-            K_[r] = aug[r][2 * N];
+            for (int c = 0; c < N; ++c) M_[inactive][r][c] = aug[r][N + c];
+            K_[inactive][r] = aug[r][2 * N];
         }
+        active_.store(inactive, std::memory_order_release);
     }
 
     double step(double u) {
+        int a = active_.load(std::memory_order_acquire);
+        const auto& M = M_[a];
+        const auto& K = K_[a];
         std::array<double, N> xn{};
         for (int r = 0; r < N; ++r) {
-            double acc = K_[r] * (u + u1_);
-            for (int c = 0; c < N; ++c) acc += M_[r][c] * x_[c];
+            double acc = K[r] * (u + u1_);
+            for (int c = 0; c < N; ++c) acc += M[r][c] * x_[c];
             xn[r] = acc;
         }
         x_ = xn;
@@ -620,8 +631,9 @@ public:
     }
 private:
     static constexpr int N = 9;              // 8 nodes + source current
-    std::array<std::array<double, N>, N> M_{};
-    std::array<double, N> K_{};
+    std::array<std::array<std::array<double, N>, N>, 2> M_{};
+    std::array<std::array<double, N>, 2> K_{};
+    std::atomic<int> active_{0};
     std::array<double, N> x_{};
     double u1_ = 0.0;
 };
@@ -652,15 +664,31 @@ public:
           psu_(fs) {
         tremHz_ = 3.0 + 4.0 * c.tremSpeed;
         tremDepth_ = 4.0 * c.tremIntensity;
+        // NFB feedback low-pass. The discrete one-sample loop delay plus the
+        // OT/speaker model resonance (~8 kHz) make the closed loop oscillate
+        // there unless the feedback is rolled off well below it (measured:
+        // stable at both 48 k and 96 k for fc <= 300 Hz). 250 Hz gives margin.
+        // NB: real amps keep NFB across the band; this low cutoff is a
+        // stability compromise of the explicit (delayed) loop — an implicit
+        // loop solve is the proper fix (tracked). Tone above 250 Hz runs
+        // closer to open-loop (brighter), acceptable for a blackface voicing.
+        setFbCutoff(250.0);
     }
 
     // live control changes (call between blocks)
     void setTone(double treble, double bass, double volume) {
+        // rebuild (a 9x9 solve) only when a tone pot actually moved — called
+        // on every control change, and rebuilding under the audio lock on
+        // each event starves the callback (ASIO overflow while dragging).
+        if (treble == c_.treble && bass == c_.bass && volume == c_.volume)
+            return;
         c_.treble = treble; c_.bass = bass; c_.volume = volume;
         stack_.rebuild(fs_, treble, bass, volume);
     }
     void setReverb(double r) { c_.reverb = r; }
     void setTankReturn(double k) { tankRetK_ = k; }   // calibration hook
+    void setNfb(double scale) { nfbScale_ = scale; }  // 0 = open loop
+    void setFbCutoff(double fc) { fbA_ = 2.0*kPi*fc / (fs_ + 2.0*kPi*fc); }
     void setTremolo(double speed, double intensity) {
         c_.tremSpeed = speed; c_.tremIntensity = intensity;
         tremHz_ = 3.0 + 4.0 * speed;
@@ -668,11 +696,20 @@ public:
     }
     const AmpControls& controls() const { return c_; }
 
+    double tap[7] = {0};   // debug stage-peak taps (v1a,stack,v1b,vg,v3b,PI,spk)
+    double dbgVA = 0, dbgVB = 0;   // last PSU rail voltages (debug)
+
     // process one block; scratch buffers sized to n by caller
     void processBlock(const double* in, double* out, int n,
                       double* v1bBuf, double* drvBuf, double* wetBuf) {
-        for (int i = 0; i < n; ++i)
-            v1bBuf[i] = v1b_.step(stack_.step(v1a_.step(in[i])));
+        for (int i = 0; i < n; ++i) {
+            double a = v1a_.step(in[i]);
+            double s = stack_.step(a);
+            v1bBuf[i] = v1b_.step(s);
+            tap[0] = std::max(tap[0], std::fabs(a));
+            tap[1] = std::max(tap[1], std::fabs(s));
+            tap[2] = std::max(tap[2], std::fabs(v1bBuf[i]));
+        }
         for (int i = 0; i < n; ++i)
             drvBuf[i] = v2_.step(revHp_.step(v1bBuf[i])) * tankSendK_;
         tank_(drvBuf, wetBuf, n);                 // spring pan convolution
@@ -680,19 +717,25 @@ public:
             wetBuf[i] = v3a_.step(wetBuf[i] * tankRetK_) * c_.reverb;
         for (int i = 0; i < n; ++i) {
             double vg = mixer_.step(v1bBuf[i], wetBuf[i]);
+            tap[3] = std::max(tap[3], std::fabs(vg));
             const double Rt = 47.0, Rn = 2700.0;
-            double vfb = 0.5 * (vspk_ + vspk2_);
+            fbLp_ += fbA_ * (vspk_ - fbLp_);        // HF-stabilizing LP
+            double vfb = fbLp_ * nfbScale_;
             v3b_.nfb = (Rt * v3b_.ikPrev() + Rt * vfb / Rn) / (1.0 + Rt / Rn);
             double v3bOut = v3b_.step(vg);
             double outT, outB;
             pi_.step(v3bOut, outT, outB);
+            tap[4] = std::max(tap[4], std::fabs(v3bOut));
+            tap[5] = std::max(tap[5], std::fabs(outT));
             double vA, vB;
             psu_.step(power_.iPlates(), power_.iScreens(), vA, vB);
+            dbgVA = vA; dbgVB = vB;
             double trem = tremDepth_ > 0.0
                 ? tremDepth_ * std::sin(2 * kPi * tremHz_ * tremT_) : 0.0;
             tremT_ += 1.0 / fs_;
             vspk2_ = vspk_;
             vspk_ = power_.step(outT, outB, vA, vB, trem);
+            tap[6] = std::max(tap[6], std::fabs(vspk_));
             out[i] = vspk_;
         }
     }
@@ -713,13 +756,13 @@ private:
     PowerStage power_;
     PSU psu_;
     double tremHz_, tremDepth_, tremT_ = 0.0;
-    double vspk_ = 0.0, vspk2_ = 0.0;
+    double vspk_ = 0.0, vspk2_ = 0.0, fbLp_ = 0.0, fbA_ = 0.1, nfbScale_ = 1.0;
     // tankRetK: PRODUCT VOICING, chosen by ear (user preference): the hot
     // return drives the V3A recovery stage into saturation and the wet path
     // dominates the mix — technically "wrong" vs the physically-calibrated
     // 4.0e-4 (grid search, test/calib_rev.cpp), but it is the sound the
     // player wants. Revisit after measuring a real pan's send/return levels.
-    double tankSendK_ = 8.0e-3, tankRetK_ = 0.4;
+    double tankSendK_ = 8.0e-3, tankRetK_ = 1.0e-4;   // wet/dry ~0.6 at pot 0.5
 };
 
 }  // namespace princeton

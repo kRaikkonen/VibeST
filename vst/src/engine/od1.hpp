@@ -90,8 +90,9 @@ private:
 // S2: 4 states (vC102, vC104, vd, vo), 2-unknown NR per sample
 class DriveStage {
 public:
-    DriveStage(const Params& p, double fs, double drive, OpampMacro oa)
-        : p_(p), d_(p), oa_(oa), T_(1.0 / fs), Rf_(p.Rf(drive)) {}
+    DriveStage(const Params& p, double fs, double drive, OpampMacro oa,
+               int os = 1)
+        : p_(p), d_(p), oa_(oa), T_(1.0 / fs), Rf_(p.Rf(drive)), os_(os) {}
 
     void setDrive(double drive) { Rf_ = p_.Rf(drive); }
 
@@ -105,16 +106,26 @@ public:
         double vp = vin - vC102;
         vinPrev = vin;
 
-        SolveState st{vd, vo, vC104, vmPrev, fdPrev, foPrev};
-        SolveState nw;
-        bool conv = nrSolve(vp, T_, st, nw);
-        if (!conv) {                 // substep 4x through the fast traverse
-            nw = st;
-            for (int k = 0; k < 4; ++k) {
-                SolveState tmp;
-                nrSolve(vp, T_ / 4.0, nw, tmp);
-                nw = tmp;
+        // run the (stiff) clipping stage at os_x the pedal rate so it stays
+        // stable/accurate even when the pedal itself runs at a modest rate.
+        // The clipper's op-amp integrator collapses at large timesteps
+        // (measured: OD-1 output drops at high drive below ~384 k) — internal
+        // substepping fixes that far cheaper than oversampling the whole pedal.
+        SolveState nw{vd, vo, vC104, vmPrev, fdPrev, foPrev};
+        const double subT = T_ / os_;
+        for (int s = 0; s < os_; ++s) {
+            SolveState tmp;
+            bool conv = nrSolve(vp, subT, nw, tmp);
+            if (!conv) {             // extra 4x substep on non-convergence
+                SolveState acc = nw;
+                for (int k = 0; k < 4; ++k) {
+                    SolveState t2;
+                    nrSolve(vp, subT / 4.0, acc, t2);
+                    acc = t2;
+                }
+                tmp = acc;
             }
+            nw = tmp;
         }
         vd = nw.vd; vo = nw.vo; vC104 = nw.vC104;
         vmPrev = nw.vmPrev; fdPrev = nw.fdPrev; foPrev = nw.foPrev;
@@ -202,17 +213,28 @@ private:
     ClipperDiodes d_;
     OpampMacro oa_;
     double T_, Rf_;
+    int os_ = 1;
     double vC102 = 0, vC104 = 0, vd = 0, vo = 0;
     double vinPrev = 0, vmPrev = 0, fdPrev = 0, foPrev = 0;
 };
 
-// S3: inverting one-pole LP with op-amp macro (2-unknown NR)
+// S3: inverting one-pole LP with op-amp macro (2-unknown NR).
+// Its op-amp integrator rings/diverges at large timesteps (measured: OD-1
+// output collapses at high drive below ~384 k) — run it at os_x the pedal
+// rate via internal substepping so the pedal can run at a modest rate.
 class FilterStage {
 public:
-    FilterStage(const Params& p, double fs, OpampMacro oa)
-        : p_(p), oa_(oa), T_(1.0 / fs) {}
+    FilterStage(const Params& p, double fs, OpampMacro oa, int os = 1)
+        : p_(p), oa_(oa), T_(1.0 / (fs * os)), os_(os) {}
 
     double step(double xn) {
+        double r = 0.0;
+        for (int s = 0; s < os_; ++s) r = solveOne(xn);
+        return r;
+    }
+
+private:
+    double solveOne(double xn) {
         double cC = 2.0 * p_.C105 / T_;
         double gsum = 1.0 / p_.R108 + 1.0 / p_.R107;
         double vc = vC105, von = vo;
@@ -246,10 +268,10 @@ public:
         return vout;
     }
 
-private:
     Params p_;
     OpampMacro oa_;
     double T_;
+    int os_ = 1;
     double vC105 = 0, vo = 0, fcPrev = 0, foPrev = 0;
 };
 
@@ -325,22 +347,25 @@ private:
 class Pedal {
 public:
     Pedal(double fs, double drive = 0.5, double level = 1.0,
-          OpampMacro oa = RC3403A(), Params p = Params{})
+          OpampMacro oa = RC3403A(), Params p = Params{}, int driveOS = 1)
         : bufIn(p, fs, p.R101, p.C101, p.R102, p.R103),
-          driveStage(p, fs, drive, oa),
-          filt(p, fs, oa),
+          driveStage(p, fs, drive, oa, driveOS),
+          filt(p, fs, oa, driveOS),
           hpLvl(p.R110 + p.VR103, p.C108, fs),
           bufOut(p, fs, 1.0, p.C109, p.R112, p.R113),
           hpOut(p.R115, p.C110, fs),
           kLevel(level * p.VR103 / (p.R110 + p.VR103)) {}
 
+    double tap[5] = {0};   // debug: bufIn, drive, filt, level, out peaks
+
     double step(double x) {
-        double y = bufIn.step(x);
-        y = driveStage.step(y);
-        y = filt.step(y);
-        y = hpLvl.step(y) * kLevel;
+        double y = bufIn.step(x);   tap[0] = std::max(tap[0], std::fabs(y));
+        y = driveStage.step(y);     tap[1] = std::max(tap[1], std::fabs(y));
+        y = filt.step(y);           tap[2] = std::max(tap[2], std::fabs(y));
+        y = hpLvl.step(y) * kLevel; tap[3] = std::max(tap[3], std::fabs(y));
         y = bufOut.step(y);
-        return hpOut.step(y);
+        y = hpOut.step(y);          tap[4] = std::max(tap[4], std::fabs(y));
+        return y;
     }
 
     void setDrive(double d) { driveStage.setDrive(d); }

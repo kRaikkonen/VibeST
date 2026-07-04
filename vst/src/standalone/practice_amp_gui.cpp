@@ -17,7 +17,8 @@ namespace {
 
 constexpr int IDC_IN = 100, IDC_OUT = 101, IDC_EXCL = 102, IDC_START = 103,
               IDC_ODON = 104, IDC_CAB = 105, IDC_STATUS = 106, IDC_BUF = 107,
-              IDC_BACKEND = 108, IDC_INCH = 109, IDC_ECO = 110;
+              IDC_BACKEND = 108, IDC_INCH = 109, IDC_ECO = 110,
+              IDC_PEDAL = 111, IDC_AMP = 112;
 constexpr int IDC_SLIDER0 = 120;   // 10 sliders: 120..129
 constexpr int IDC_VAL0 = 140;      // value labels: 140..149
 
@@ -25,12 +26,13 @@ struct Param {
     const wchar_t* name;
     double lo, hi, def;
 };
-const Param kParams[10] = {
-    {L"OD-1 Drive", 0, 1, 0.5},   {L"OD-1 Level", 0, 1, 0.8},
+const Param kParams[11] = {
+    {L"Drive", 0, 1, 0.6},        {L"Pedal Level", 0, 1, 0.35},
     {L"Volume", 0, 1, 0.4},       {L"Treble", 0, 1, 0.55},
     {L"Bass", 0, 1, 0.5},         {L"Reverb", 0, 1, 0.25},
     {L"Trem Speed", 0, 1, 0.45},  {L"Trem Intensity", 0, 1, 0.0},
-    {L"Input Trim", 0, 0.5, 0.15},{L"Master", 0, 0.3, 0.025},
+    {L"Input Trim", 0, 1.0, 0.4},{L"Master", 0, 0.2, 0.045},
+    {L"Pedal Tone", 0, 1, 0.5},   // index 10
 };
 
 pa::Engine* gEngine = nullptr;
@@ -40,8 +42,9 @@ bool gRunning = false;
 ma_device_info* gPlayback = nullptr;
 ma_device_info* gCapture = nullptr;
 ma_uint32 gNPlayback = 0, gNCapture = 0;
-HWND gSliders[10], gVals[10], gStatus, gInCombo, gOutCombo, gExcl, gOdOn,
-     gStartBtn, gBufCombo, gBackend, gInCh, gEco;
+HWND gSliders[11], gVals[11], gStatus, gInCombo, gOutCombo, gExcl, gOdOn,
+     gStartBtn, gBufCombo, gBackend, gInCh, gEco, gCabLabel, gPedalKind,
+     gAmpKind;
 HFONT gFont;
 std::wstring gStatusBase;
 const int kBufSizes[4] = {64, 128, 256, 512};
@@ -92,6 +95,16 @@ void applyControls() {
     c.tremIntensity = sliderValue(7);
     c.inTrim = sliderValue(8);
     c.master = sliderValue(9);
+    c.odTone = sliderValue(10);
+    c.pedalKind = static_cast<int>(
+        SendMessageW(gPedalKind, CB_GETCURSEL, 0, 0));
+    if (c.pedalKind < 0) c.pedalKind = 0;
+    c.ampKind = static_cast<int>(SendMessageW(gAmpKind, CB_GETCURSEL, 0, 0));
+    if (c.ampKind < 0) c.ampKind = 0;
+    // Heavy tone-stack rebuild is done here OUTSIDE the audio lock (it is
+    // lock-free / double-buffered), so frantic pot dragging can't starve the
+    // audio callback. The rest of apply() is a handful of cheap assignments.
+    gEngine->amp.setTone(c.treble, c.bass, c.volume);
     std::lock_guard<std::mutex> lk(gEngine->mtx);
     gEngine->apply(c);
 }
@@ -203,10 +216,18 @@ void loadCabDialog(HWND hwnd) {
     WideCharToMultiByte(CP_UTF8, 0, path, -1, utf8, sizeof(utf8), nullptr,
                         nullptr);
     auto ir = pa::loadCabWav(utf8);
+    size_t taps = ir.size();
     std::lock_guard<std::mutex> lk(gEngine->mtx);
     gEngine->setCab(std::move(ir));
-    SetWindowTextW(gStatus, gEngine->useCabIr
-        ? L"cab IR loaded" : L"cab IR load failed - built-in C10R voicing");
+    if (gEngine->useCabIr) {
+        const wchar_t* base = wcsrchr(path, L'\\');
+        base = base ? base + 1 : path;
+        wchar_t msg[300];
+        swprintf(msg, 300, L"Cab IR: %s  (%zu taps, loaded OK)", base, taps);
+        SetWindowTextW(gCabLabel, msg);
+    } else {
+        SetWindowTextW(gCabLabel, L"Cab IR load FAILED - built-in C10R voicing");
+    }
 }
 
 HWND mk(HWND parent, const wchar_t* cls, const wchar_t* text, DWORD style,
@@ -262,29 +283,58 @@ void buildUi(HWND hwnd) {
     gStatus = mk(hwnd, L"STATIC", L"stopped", 0, 12, 132, 424, 20,
                  IDC_STATUS);
 
-    gOdOn = mk(hwnd, L"BUTTON", L"OD-1 engaged (white-box buffered bypass)",
-               BS_AUTOCHECKBOX, 12, 158, 300, 22, IDC_ODON);
-    SendMessageW(gOdOn, BM_SETCHECK, BST_CHECKED, 0);
     gEco = mk(hwnd, L"BUTTON", L"Eco (low CPU)", BS_AUTOCHECKBOX,
-              320, 158, 116, 22, IDC_ECO);
+              12, 158, 130, 22, IDC_ECO);
+    gCabLabel = mk(hwnd, L"STATIC", L"Cab: built-in C10R voicing", 0,
+                   150, 160, 286, 20, 0);
 
     populateDevices();
 
-    for (int i = 0; i < 10; ++i) {
-        int y = 188 + i * 36;
-        mk(hwnd, L"STATIC", kParams[i].name, 0, 12, y + 6, 104, 20, 0);
+    auto slider = [&](int i, int x, int y, int w) {
+        mk(hwnd, L"STATIC", kParams[i].name, 0, x, y + 6, 100, 20, 0);
         gSliders[i] = mk(hwnd, TRACKBAR_CLASSW, nullptr,
-                         TBS_HORZ | TBS_AUTOTICKS, 120, y, 250, 28,
+                         TBS_HORZ | TBS_AUTOTICKS, x + 104, y, w, 28,
                          IDC_SLIDER0 + i);
         SendMessageW(gSliders[i], TBM_SETRANGE, TRUE, MAKELPARAM(0, 100));
-        int pos = static_cast<int>(
-            (kParams[i].def - kParams[i].lo)
+        int pos = static_cast<int>((kParams[i].def - kParams[i].lo)
             / (kParams[i].hi - kParams[i].lo) * 100.0 + 0.5);
         SendMessageW(gSliders[i], TBM_SETPOS, TRUE, pos);
-        gVals[i] = mk(hwnd, L"STATIC", L"", 0, 378, y + 6, 58, 20,
+        gVals[i] = mk(hwnd, L"STATIC", L"", 0, x + 104 + w + 6, y + 6, 52, 20,
                       IDC_VAL0 + i);
         updateValueLabel(i);
-    }
+    };
+
+    // ---- OVERDRIVE pedal section (visually separate from the amp) --------
+    mk(hwnd, L"BUTTON", L"OVERDRIVE / DISTORTION PEDAL",
+       BS_GROUPBOX, 8, 186, 436, 190, 0);
+    gOdOn = mk(hwnd, L"BUTTON", L"Engage  (off = amp only)",
+               BS_AUTOCHECKBOX, 22, 208, 190, 20, IDC_ODON);
+    gPedalKind = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST,
+                    228, 205, 200, 160, IDC_PEDAL);
+    for (auto* n : {L"Boss OD-1 (1977)", L"Boss SD-1 (1981)",
+                    L"Ibanez TS-808", L"Mad Professor Red"})
+        SendMessageW(gPedalKind, CB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(n));
+    SendMessageW(gPedalKind, CB_SETCURSEL, 0, 0);
+    slider(0, 22, 236, 224);   // Drive
+    slider(10, 22, 270, 224);  // Pedal Tone
+    slider(1, 22, 304, 224);   // Pedal Level
+
+    // ---- AMPLIFIER section ----------------------------------------------
+    mk(hwnd, L"BUTTON", L"AMPLIFIER", BS_GROUPBOX, 8, 384, 436, 244, 0);
+    gAmpKind = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST,
+                  120, 404, 300, 160, IDC_AMP);
+    for (auto* n : {L"Fender Princeton Reverb", L"Marshall Super Lead Plexi"})
+        SendMessageW(gAmpKind, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(n));
+    SendMessageW(gAmpKind, CB_SETCURSEL, 0, 0);
+    mk(hwnd, L"STATIC", L"(Plexi: Reverb knob = Mid)", 0, 22, 407, 96, 18, 0);
+    for (int i = 2; i <= 7; ++i)
+        slider(i, 22, 434 + (i - 2) * 34, 224);
+
+    // ---- LEVELS section --------------------------------------------------
+    mk(hwnd, L"BUTTON", L"LEVELS", BS_GROUPBOX, 8, 668, 436, 90, 0);
+    slider(8, 22, 690, 224);   // Input Trim
+    slider(9, 22, 724, 224);   // Master
 }
 
 LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -310,7 +360,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         case WM_HSCROLL:
-            for (int i = 0; i < 10; ++i)
+            for (int i = 0; i < 11; ++i)
                 if (reinterpret_cast<HWND>(lp) == gSliders[i])
                     updateValueLabel(i);
             applyControls();
@@ -320,6 +370,10 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 case IDC_START: startStop(hwnd); return 0;
                 case IDC_CAB: loadCabDialog(hwnd); return 0;
                 case IDC_ODON: applyControls(); return 0;
+                case IDC_PEDAL:
+                case IDC_AMP:
+                    if (HIWORD(wp) == CBN_SELCHANGE) applyControls();
+                    return 0;
                 case IDC_BACKEND:
                     if (HIWORD(wp) == CBN_SELCHANGE) populateDevices();
                     return 0;
@@ -357,7 +411,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nShow) {
     wc.lpszClassName = L"PrincetonPractice";
     RegisterClassW(&wc);
 
-    RECT r{0, 0, 452, 562};
+    RECT r{0, 0, 460, 804};
     AdjustWindowRect(&r, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU
                      | WS_MINIMIZEBOX, FALSE);
     HWND hwnd = CreateWindowExW(

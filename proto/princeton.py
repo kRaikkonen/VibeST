@@ -480,9 +480,14 @@ class PrincetonReverb:
         # ---- pass B: V3B + PI + power + PSU + tremolo --------------------
         y = np.empty(n)
         vspk = 0.0
-        vspk2 = 0.0   # NFB uses 2-sample average: zero at Nyquist, kills the
-                      # numerical loop oscillation the real OT's leakage
-                      # inductance prevents (leakage model TODO in PLAN)
+        # NFB feedback low-pass (matches C++ engine): the explicit one-sample
+        # loop delay + OT/speaker resonance make the closed loop self-oscillate
+        # near ~8 kHz otherwise. 250 Hz rolls the loop gain below unity there
+        # at every runtime rate. (Real amps keep NFB broadband; this is a
+        # stability compromise of the delayed discrete loop — implicit solve
+        # is the proper fix, tracked in PLAN.)
+        fb_lp = 0.0
+        fb_a = 2 * np.pi * 250.0 / (fs + 2 * np.pi * 250.0)
         t = np.arange(n) / fs
         trem = self.trem_depth * np.sin(2 * np.pi * self.trem_hz * t) \
             if self.trem_depth > 0 else np.zeros(n)
@@ -491,8 +496,8 @@ class PrincetonReverb:
             # NFB injection at V3B cathode tail (one-sample delayed speaker V)
             # node J: vJ = (Rt*ik + Rt*vspk/Rn) / (1 + Rt/Rn)
             Rt, Rn = self.R_tail, self.R_nfb
-            v_fb = 0.5 * (vspk + vspk2)
-            vJ = (Rt * self.v3b.ik_prev + Rt * v_fb / Rn) / (1.0 + Rt / Rn)
+            fb_lp += fb_a * (vspk - fb_lp)
+            vJ = (Rt * self.v3b.ik_prev + Rt * fb_lp / Rn) / (1.0 + Rt / Rn)
             if self.probe is not None:        # loop-gain measurement hook
                 vJ += self.probe[i]
             self.v3b.nfb = vJ
@@ -503,7 +508,6 @@ class PrincetonReverb:
             # grid assignment sets NFB polarity: speaker V must arrive at the
             # V3B cathode in phase with its grid signal (negative feedback);
             # verified empirically in validate_princeton [6]
-            vspk2 = vspk
             vspk = self.power.step(out_t, out_b, vA, vB, bias_mod=trem[i])
             y[i] = vspk
         return y
