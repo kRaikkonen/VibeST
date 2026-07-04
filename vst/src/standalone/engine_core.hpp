@@ -33,10 +33,13 @@ constexpr int kChunk192 = 4 * kChunk48;
 constexpr int kChunk384 = 8 * kChunk48;     // OD-1 runs here (its valid rate)
 
 struct Controls {
-    bool odOn = false;              // pedal off by default (amp-only default)
-    int pedalKind = 0;              // 0 OD-1, 1 SD-1, 2 TS-808, 3 Mad Red
+    // two stackable pedal slots (A feeds B feeds the amp)
+    bool aOn = false, bOn = false;
+    int aKind = 0, bKind = 2;       // 0 OD-1, 1 SD-1, 2 TS-808, 3 Mad Red
+    double aDrive = 0.6, aTone = 0.5, aLevel = 0.35;
+    double bDrive = 0.5, bTone = 0.5, bLevel = 0.35;
     int ampKind = 0;                // 0 Princeton Reverb, 1 Marshall Plexi
-    double odDrive = 0.6, odLevel = 0.35, odTone = 0.5;  // enough gain to clip
+    int cabKind = 0;                // 0 C10R 1x10, 1 Greenback 2x12, 2 GB 4x12
     double volume = 0.4, treble = 0.55, bass = 0.5, reverb = 0.25;
     double tremSpeed = 0.45, tremIntensity = 0.0;
     // full-scale digital -> volts at the input jack. A real guitar sits at
@@ -66,8 +69,10 @@ struct Engine {
           // internally substepping 2x -> effective 384 k where it matters, at
           // roughly half the cost of running the whole pedal at 384 k. Verified
           // to match the 384 k reference sample-for-sample (diag_od1).
-          pedal(192000.0, 0.5, 0.8, od1::RC3403A(), od1::Params{}, 2),
-          fxPedal(pedals::Kind::SD1, 192000.0, 0.6, 0.35, 0.5, 2),
+          pedalA(192000.0, 0.5, 0.8, od1::RC3403A(), od1::Params{}, 2),
+          pedalB(192000.0, 0.5, 0.8, od1::RC3403A(), od1::Params{}, 2),
+          fxA(pedals::Kind::SD1, 192000.0, 0.6, 0.35, 0.5, 2),
+          fxB(pedals::Kind::TS808, 192000.0, 0.5, 0.35, 0.5, 2),
           plexiAmp(eco_ ? 48000.0 : 96000.0, 0.6, 0.6, 0.4, 0.5, 1.0),
           amp(eco_ ? 48000.0 : 96000.0, princeton::AmpControls{},
               makeTank()) {
@@ -86,11 +91,7 @@ struct Engine {
         // it fart / "broken speaker". Real amps AC-couple their input jack;
         // 18 Hz is below the lowest guitar note so it is tonally transparent.
         ampInHp.highpass(18.0, 0.707, eco_ ? 48000.0 : 96000.0);
-        cabHp.highpass(80.0, 0.707, 48000.0);
-        cabBump.peaking(110.0, 1.1, 0.0, 48000.0);
-        cabPres.peaking(3200.0, 1.4, -4.0, 48000.0);   // presence dip
-        cabLp1.lowpass(4300.0, 0.707, 48000.0);
-        cabLp2.lowpass(4300.0, 0.707, 48000.0);
+        rebuildCab(0);
         apply(Controls{});
     }
 
@@ -110,30 +111,59 @@ struct Engine {
         useCabIr = true;
     }
 
-    void apply(const Controls& c) {
-        if (c.pedalKind != ctl.pedalKind && c.pedalKind != 0) {
-            static const pedals::Kind kinds[] = {
-                pedals::Kind::OD1, pedals::Kind::SD1,
-                pedals::Kind::TS808, pedals::Kind::MadRed};
-            fxPedal = pedals::Pedal(kinds[c.pedalKind], 192000.0,
-                                    c.odDrive, c.odLevel, c.odTone, 2);
-        }
-        if (c.pedalKind == 0) {
-            pedal.setDrive(c.odDrive);
-            pedal.setLevel(c.odLevel);
+    void applySlot(od1::Pedal& od, pedals::Pedal& fx, int kind, int oldKind,
+                   double drive, double tone, double level) {
+        static const pedals::Kind kinds[] = {
+            pedals::Kind::OD1, pedals::Kind::SD1,
+            pedals::Kind::TS808, pedals::Kind::MadRed};
+        if (kind != oldKind && kind != 0)
+            fx = pedals::Pedal(kinds[kind], 192000.0, drive, level, tone, 2);
+        if (kind == 0) {
+            od.setDrive(drive);
+            od.setLevel(level);
         } else {
-            fxPedal.setDrive(c.odDrive);
-            fxPedal.setLevel(c.odLevel);
-            fxPedal.setTone(c.odTone);
+            fx.setDrive(drive);
+            fx.setLevel(level);
+            fx.setTone(tone);
         }
+    }
+
+    void apply(const Controls& c) {
+        applySlot(pedalA, fxA, c.aKind, ctl.aKind, c.aDrive, c.aTone, c.aLevel);
+        applySlot(pedalB, fxB, c.bKind, ctl.bKind, c.bDrive, c.bTone, c.bLevel);
         amp.setTone(c.treble, c.bass, c.volume);
         amp.setReverb(c.reverb);
         amp.setTremolo(c.tremSpeed, c.tremIntensity);
-        // Marshall Plexi: Volume slider = Gain, Treble/Bass = tone, the
-        // Reverb slider is repurposed as the Mid control (Plexi has no reverb)
+        // Marshall Plexi control map: Volume->Gain, Reverb->Middle,
+        // TremSpeed->Presence, TremIntensity->High Treble (bright)
         plexiAmp.setGain(c.volume);
         plexiAmp.setTone(c.treble, c.bass, c.reverb);
+        plexiAmp.setPresence(c.tremSpeed);
+        plexiAmp.setBright(c.tremIntensity);
+        if (c.cabKind != ctl.cabKind) rebuildCab(c.cabKind);
         ctl = c;
+    }
+
+    void rebuildCab(int k) {
+        if (k == 1) {          // Celestion Greenback G12M 2x12
+            cabHp.highpass(75.0, 0.707, 48000.0);
+            cabBump.peaking(120.0, 1.2, 2.5, 48000.0);
+            cabPres.peaking(2400.0, 1.4, 3.0, 48000.0);   // cone breakup
+            cabLp1.lowpass(5200.0, 0.75, 48000.0);
+            cabLp2.lowpass(5200.0, 0.75, 48000.0);
+        } else if (k == 2) {   // G12M 4x12 closed back
+            cabHp.highpass(65.0, 0.707, 48000.0);
+            cabBump.peaking(100.0, 1.0, 5.0, 48000.0);    // big low bump
+            cabPres.peaking(2300.0, 1.4, 3.0, 48000.0);
+            cabLp1.lowpass(4600.0, 0.75, 48000.0);
+            cabLp2.lowpass(4600.0, 0.75, 48000.0);
+        } else {               // Jensen C10R 1x10 (Princeton)
+            cabHp.highpass(80.0, 0.707, 48000.0);
+            cabBump.peaking(110.0, 1.1, 0.0, 48000.0);
+            cabPres.peaking(3200.0, 1.4, -4.0, 48000.0);
+            cabLp1.lowpass(4300.0, 0.707, 48000.0);
+            cabLp2.lowpass(4300.0, 0.707, 48000.0);
+        }
     }
 
     // one chunk: 128 mono samples in/out at 48k
@@ -148,17 +178,25 @@ struct Engine {
         for (int i = 0; i < kChunk48; ++i)
             x48[i] = static_cast<double>(in[i]) * ctl.inTrim;
 
-        // ---- OD-1 pedal (192 k, stiff stages substep internally) -----------
+        // ---- pedal slots A -> B (192 k, stiff stages substep internally) ---
         (void)x384;
         double* ampIn;
         int ampN;
-        if (ctl.odOn) {
+        if (ctl.aOn || ctl.bOn) {
             odUp1.process(x48, x96, kChunk48);
             odUp2.process(x96, x192, kChunk96);
-            if (ctl.pedalKind == 0)
-                for (int i = 0; i < kChunk192; ++i) x192[i] = pedal.step(x192[i]);
-            else
-                for (int i = 0; i < kChunk192; ++i) x192[i] = fxPedal.step(x192[i]);
+            if (ctl.aOn) {
+                if (ctl.aKind == 0)
+                    for (int i = 0; i < kChunk192; ++i) x192[i] = pedalA.step(x192[i]);
+                else
+                    for (int i = 0; i < kChunk192; ++i) x192[i] = fxA.step(x192[i]);
+            }
+            if (ctl.bOn) {
+                if (ctl.bKind == 0)
+                    for (int i = 0; i < kChunk192; ++i) x192[i] = pedalB.step(x192[i]);
+                else
+                    for (int i = 0; i < kChunk192; ++i) x192[i] = fxB.step(x192[i]);
+            }
             odDn2.process(x192, x96, kChunk96);
             if (eco) { odDn3.process(x96, x48, kChunk48); ampIn = x48; ampN = kChunk48; }
             else     { ampIn = x96; ampN = kChunk96; }
@@ -206,8 +244,8 @@ struct Engine {
 
     bool eco;
     int ampChunk;
-    od1::Pedal pedal;
-    pedals::Pedal fxPedal;         // SD-1 / TS-808 / Mad Red (reconstructed)
+    od1::Pedal pedalA, pedalB;     // deep-white-box OD-1 (kind 0), per slot
+    pedals::Pedal fxA, fxB;        // SD-1 / TS-808 / Mad Red per slot
     princeton::Amp amp;
     plexi::Amp plexiAmp;           // Marshall Super Lead Plexi
     dsp::PartConv conv, cabConv;

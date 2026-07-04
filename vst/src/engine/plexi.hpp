@@ -100,21 +100,39 @@ public:
           gain_(gain), master_(master) {
         double wc = 2.0 * princeton::kPi * 250.0;
         fbA_ = wc / (fs + wc);
+        double wp = 2.0 * princeton::kPi * 1900.0;   // presence shelf corner
+        prA_ = wp / (fs + wp);
+        double wb = 2.0 * princeton::kPi * 3000.0;   // bright-cap corner
+        brA_ = wb / (fs + wb);
     }
 
     void setGain(double g) { gain_ = g; }
     void setMaster(double m) { master_ = m; }
     void setTone(double t, double b, double m) { tone_.rebuild(fs_, t, b, m); }
+    // Presence: on the real amp a 22k pot + 0.1u in the NFB tail shunts HF
+    // feedback -> more highs when up. Our PI loop runs open, so the same
+    // audible effect is a pre-PI high shelf (0..+7 dB above ~1.9 kHz).
+    // Documented approximation; proper NFB presence lands with the implicit
+    // loop solve.
+    void setPresence(double p) { presence_ = std::clamp(p, 0.0, 1.0); }
+    // High Treble: channel I's bright voicing (470p/.005u bright caps across
+    // Volume I) — blends a high-passed component into the gain path.
+    void setBright(double b) { bright_ = std::clamp(b, 0.0, 1.0); }
 
     void processBlock(const double* in, double* out, int n) {
         for (int i = 0; i < n; ++i) {
-            // preamp: V1 -> Gain pot -> V2 -> tone stack -> PI. (The real
-            // V2B cathode follower is a unity buffer, not a gain stage —
-            // adding it as gain over-saturated everything, so it's folded
-            // into the tone-stack drive.)
+            // preamp: V1 -> bright Volume I -> V2 -> tone stack -> PI. (The
+            // real V2B cathode follower is a unity buffer, folded into the
+            // tone-stack drive.)
             double y = v1_.step(in[i]);
+            // High Treble channel bright caps: HP'd blend across the volume
+            brHp_ += brA_ * (y - brHp_);
+            y = y + bright_ * 1.5 * (y - brHp_);
             y = v2_.step(y * (0.1 + 1.4 * gain_));
             y = tone_.step(y);
+            // presence shelf (see setPresence)
+            prLp_ += prA_ * (y - prLp_);
+            y = y + presence_ * 1.3 * (y - prLp_);
             double outT, outB;
             pi_.step(y * 6.0, outT, outB);     // tone-stack makeup into the PI
             double vA, vB;
@@ -135,6 +153,8 @@ private:
     princeton::PowerStage power_;
     princeton::PSU psu_;
     double gain_, master_, vspk_ = 0.0, fbLp_ = 0.0, fbA_ = 0.1;
+    double presence_ = 0.5, bright_ = 0.3;
+    double prA_ = 0.1, prLp_ = 0.0, brA_ = 0.1, brHp_ = 0.0;
 };
 
 }  // namespace plexi

@@ -18,7 +18,8 @@ namespace {
 constexpr int IDC_IN = 100, IDC_OUT = 101, IDC_EXCL = 102, IDC_START = 103,
               IDC_ODON = 104, IDC_CAB = 105, IDC_STATUS = 106, IDC_BUF = 107,
               IDC_BACKEND = 108, IDC_INCH = 109, IDC_ECO = 110,
-              IDC_PEDAL = 111, IDC_AMP = 112;
+              IDC_PEDAL = 111, IDC_AMP = 112, IDC_PEDALB = 113,
+              IDC_ODB = 114, IDC_CABKIND = 115;
 constexpr int IDC_SLIDER0 = 120;   // 10 sliders: 120..129
 constexpr int IDC_VAL0 = 140;      // value labels: 140..149
 
@@ -26,13 +27,22 @@ struct Param {
     const wchar_t* name;
     double lo, hi, def;
 };
-const Param kParams[11] = {
-    {L"Drive", 0, 1, 0.6},        {L"Pedal Level", 0, 1, 0.35},
+const Param kParams[14] = {
+    {L"Drive", 0, 1, 0.6},        {L"Level", 0, 1, 0.35},
     {L"Volume", 0, 1, 0.4},       {L"Treble", 0, 1, 0.55},
     {L"Bass", 0, 1, 0.5},         {L"Reverb", 0, 1, 0.25},
     {L"Trem Speed", 0, 1, 0.45},  {L"Trem Intensity", 0, 1, 0.0},
     {L"Input Trim", 0, 1.0, 0.4},{L"Master", 0, 0.2, 0.045},
-    {L"Pedal Tone", 0, 1, 0.5},   // index 10
+    {L"Tone", 0, 1, 0.5},         // 10: slot A tone
+    {L"Drive", 0, 1, 0.5},        // 11: slot B drive
+    {L"Tone", 0, 1, 0.5},         // 12: slot B tone
+    {L"Level", 0, 1, 0.35},       // 13: slot B level
+};
+// amp-dependent labels for sliders 2..7
+const wchar_t* kAmpLabels[2][6] = {
+    {L"Volume", L"Treble", L"Bass", L"Reverb", L"Trem Speed",
+     L"Trem Intensity"},
+    {L"Gain", L"Treble", L"Bass", L"Middle", L"Presence", L"High Treble"},
 };
 
 pa::Engine* gEngine = nullptr;
@@ -42,9 +52,9 @@ bool gRunning = false;
 ma_device_info* gPlayback = nullptr;
 ma_device_info* gCapture = nullptr;
 ma_uint32 gNPlayback = 0, gNCapture = 0;
-HWND gSliders[11], gVals[11], gStatus, gInCombo, gOutCombo, gExcl, gOdOn,
-     gStartBtn, gBufCombo, gBackend, gInCh, gEco, gCabLabel, gPedalKind,
-     gAmpKind;
+HWND gSliders[14], gVals[14], gParamLbl[14], gStatus, gInCombo, gOutCombo,
+     gExcl, gOdOn, gOdB, gStartBtn, gBufCombo, gBackend, gInCh, gEco,
+     gCabLabel, gPedalKind, gPedalKindB, gAmpKind, gCabKind;
 HFONT gFont;
 std::wstring gStatusBase;
 const int kBufSizes[4] = {64, 128, 256, 512};
@@ -84,9 +94,10 @@ void updateValueLabel(int i) {
 void applyControls() {
     if (!gEngine) return;
     pa::Controls c;
-    c.odOn = SendMessageW(gOdOn, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    c.odDrive = sliderValue(0);
-    c.odLevel = sliderValue(1);
+    c.aOn = SendMessageW(gOdOn, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    c.bOn = SendMessageW(gOdB, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    c.aDrive = sliderValue(0);
+    c.aLevel = sliderValue(1);
     c.volume = sliderValue(2);
     c.treble = sliderValue(3);
     c.bass = sliderValue(4);
@@ -95,12 +106,18 @@ void applyControls() {
     c.tremIntensity = sliderValue(7);
     c.inTrim = sliderValue(8);
     c.master = sliderValue(9);
-    c.odTone = sliderValue(10);
-    c.pedalKind = static_cast<int>(
-        SendMessageW(gPedalKind, CB_GETCURSEL, 0, 0));
-    if (c.pedalKind < 0) c.pedalKind = 0;
+    c.aTone = sliderValue(10);
+    c.bDrive = sliderValue(11);
+    c.bTone = sliderValue(12);
+    c.bLevel = sliderValue(13);
+    c.aKind = static_cast<int>(SendMessageW(gPedalKind, CB_GETCURSEL, 0, 0));
+    if (c.aKind < 0) c.aKind = 0;
+    c.bKind = static_cast<int>(SendMessageW(gPedalKindB, CB_GETCURSEL, 0, 0));
+    if (c.bKind < 0) c.bKind = 0;
     c.ampKind = static_cast<int>(SendMessageW(gAmpKind, CB_GETCURSEL, 0, 0));
     if (c.ampKind < 0) c.ampKind = 0;
+    c.cabKind = static_cast<int>(SendMessageW(gCabKind, CB_GETCURSEL, 0, 0));
+    if (c.cabKind < 0) c.cabKind = 0;
     // Heavy tone-stack rebuild is done here OUTSIDE the audio lock (it is
     // lock-free / double-buffered), so frantic pot dragging can't starve the
     // audio callback. The rest of apply() is a handful of cheap assignments.
@@ -284,14 +301,21 @@ void buildUi(HWND hwnd) {
                  IDC_STATUS);
 
     gEco = mk(hwnd, L"BUTTON", L"Eco (low CPU)", BS_AUTOCHECKBOX,
-              12, 158, 130, 22, IDC_ECO);
-    gCabLabel = mk(hwnd, L"STATIC", L"Cab: built-in C10R voicing", 0,
-                   150, 160, 286, 20, 0);
+              12, 158, 110, 22, IDC_ECO);
+    mk(hwnd, L"STATIC", L"Cab:", 0, 128, 162, 32, 18, 0);
+    gCabKind = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST,
+                  162, 158, 150, 140, IDC_CABKIND);
+    for (auto* n : {L"Jensen C10R 1x10", L"Greenback 2x12",
+                    L"Greenback 4x12"})
+        SendMessageW(gCabKind, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(n));
+    SendMessageW(gCabKind, CB_SETCURSEL, 0, 0);
+    gCabLabel = mk(hwnd, L"STATIC", L"(built-in)", 0, 320, 162, 116, 18, 0);
 
     populateDevices();
 
     auto slider = [&](int i, int x, int y, int w) {
-        mk(hwnd, L"STATIC", kParams[i].name, 0, x, y + 6, 100, 20, 0);
+        gParamLbl[i] = mk(hwnd, L"STATIC", kParams[i].name, 0, x, y + 6,
+                          100, 20, 0);
         gSliders[i] = mk(hwnd, TRACKBAR_CLASSW, nullptr,
                          TBS_HORZ | TBS_AUTOTICKS, x + 104, y, w, 28,
                          IDC_SLIDER0 + i);
@@ -304,37 +328,54 @@ void buildUi(HWND hwnd) {
         updateValueLabel(i);
     };
 
-    // ---- OVERDRIVE pedal section (visually separate from the amp) --------
-    mk(hwnd, L"BUTTON", L"OVERDRIVE / DISTORTION PEDAL",
-       BS_GROUPBOX, 8, 186, 436, 190, 0);
-    gOdOn = mk(hwnd, L"BUTTON", L"Engage  (off = amp only)",
-               BS_AUTOCHECKBOX, 22, 208, 190, 20, IDC_ODON);
-    gPedalKind = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST,
-                    228, 205, 200, 160, IDC_PEDAL);
-    for (auto* n : {L"Boss OD-1 (1977)", L"Boss SD-1 (1981)",
-                    L"Ibanez TS-808", L"Mad Professor Red"})
-        SendMessageW(gPedalKind, CB_ADDSTRING, 0,
-                     reinterpret_cast<LPARAM>(n));
+    // ---- PEDALBOARD: two stackable slots, A feeds B ------------------------
+    mk(hwnd, L"BUTTON", L"PEDALBOARD  (A → B → amp)",
+       BS_GROUPBOX, 8, 186, 436, 262, 0);
+    auto pedalCombo = [&](int id, int x, int y) {
+        HWND cb = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST,
+                     x, y, 190, 160, id);
+        for (auto* n : {L"Boss OD-1 (1977)", L"Boss SD-1 (1981)",
+                        L"Ibanez TS-808", L"Mad Professor Red"})
+            SendMessageW(cb, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(n));
+        return cb;
+    };
+    gOdOn = mk(hwnd, L"BUTTON", L"Slot A", BS_AUTOCHECKBOX,
+               22, 208, 70, 20, IDC_ODON);
+    gPedalKind = pedalCombo(IDC_PEDAL, 100, 205);
     SendMessageW(gPedalKind, CB_SETCURSEL, 0, 0);
-    slider(0, 22, 236, 224);   // Drive
-    slider(10, 22, 270, 224);  // Pedal Tone
-    slider(1, 22, 304, 224);   // Pedal Level
+    slider(0, 22, 232, 224);   // A Drive
+    slider(10, 22, 262, 224);  // A Tone
+    slider(1, 22, 292, 224);   // A Level
+
+    gOdB = mk(hwnd, L"BUTTON", L"Slot B", BS_AUTOCHECKBOX,
+              22, 326, 70, 20, IDC_ODB);
+    gPedalKindB = pedalCombo(IDC_PEDALB, 100, 323);
+    SendMessageW(gPedalKindB, CB_SETCURSEL, 2, 0);   // default TS-808
+    slider(11, 22, 350, 224);  // B Drive
+    slider(12, 22, 380, 224);  // B Tone
+    slider(13, 22, 410, 224);  // B Level
 
     // ---- AMPLIFIER section ----------------------------------------------
-    mk(hwnd, L"BUTTON", L"AMPLIFIER", BS_GROUPBOX, 8, 384, 436, 244, 0);
+    mk(hwnd, L"BUTTON", L"AMPLIFIER", BS_GROUPBOX, 8, 456, 436, 240, 0);
     gAmpKind = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST,
-                  120, 404, 300, 160, IDC_AMP);
+                  22, 476, 250, 160, IDC_AMP);
     for (auto* n : {L"Fender Princeton Reverb", L"Marshall Super Lead Plexi"})
         SendMessageW(gAmpKind, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(n));
     SendMessageW(gAmpKind, CB_SETCURSEL, 0, 0);
-    mk(hwnd, L"STATIC", L"(Plexi: Reverb knob = Mid)", 0, 22, 407, 96, 18, 0);
     for (int i = 2; i <= 7; ++i)
-        slider(i, 22, 434 + (i - 2) * 34, 224);
+        slider(i, 22, 504 + (i - 2) * 30, 224);
 
     // ---- LEVELS section --------------------------------------------------
-    mk(hwnd, L"BUTTON", L"LEVELS", BS_GROUPBOX, 8, 668, 436, 90, 0);
-    slider(8, 22, 690, 224);   // Input Trim
-    slider(9, 22, 724, 224);   // Master
+    mk(hwnd, L"BUTTON", L"LEVELS", BS_GROUPBOX, 8, 704, 436, 92, 0);
+    slider(8, 22, 726, 224);   // Input Trim
+    slider(9, 22, 758, 224);   // Master
+}
+
+void relabelAmp() {
+    int a = static_cast<int>(SendMessageW(gAmpKind, CB_GETCURSEL, 0, 0));
+    if (a < 0 || a > 1) a = 0;
+    for (int i = 2; i <= 7; ++i)
+        SetWindowTextW(gParamLbl[i], kAmpLabels[a][i - 2]);
 }
 
 LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -360,7 +401,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         case WM_HSCROLL:
-            for (int i = 0; i < 11; ++i)
+            for (int i = 0; i < 14; ++i)
                 if (reinterpret_cast<HWND>(lp) == gSliders[i])
                     updateValueLabel(i);
             applyControls();
@@ -369,9 +410,17 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             switch (LOWORD(wp)) {
                 case IDC_START: startStop(hwnd); return 0;
                 case IDC_CAB: loadCabDialog(hwnd); return 0;
-                case IDC_ODON: applyControls(); return 0;
-                case IDC_PEDAL:
+                case IDC_ODON:
+                case IDC_ODB: applyControls(); return 0;
                 case IDC_AMP:
+                    if (HIWORD(wp) == CBN_SELCHANGE) {
+                        relabelAmp();
+                        applyControls();
+                    }
+                    return 0;
+                case IDC_PEDAL:
+                case IDC_PEDALB:
+                case IDC_CABKIND:
                     if (HIWORD(wp) == CBN_SELCHANGE) applyControls();
                     return 0;
                 case IDC_BACKEND:
@@ -411,7 +460,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nShow) {
     wc.lpszClassName = L"PrincetonPractice";
     RegisterClassW(&wc);
 
-    RECT r{0, 0, 460, 804};
+    RECT r{0, 0, 460, 842};
     AdjustWindowRect(&r, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU
                      | WS_MINIMIZEBOX, FALSE);
     HWND hwnd = CreateWindowExW(

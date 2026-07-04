@@ -17,7 +17,7 @@ namespace {
 void printStatus(const pa::Controls& c, int load) {
     std::printf("\r[OD-1 %s d=%.2f l=%.2f] [Vol %.2f Tre %.2f Bas %.2f "
                 "Rev %.2f TrS %.2f TrI %.2f] trim %.2f mast %.3f load %d%%  ",
-                c.odOn ? "ON " : "off", c.odDrive, c.odLevel, c.volume,
+                c.aOn ? "ON " : "off", c.aDrive, c.aLevel, c.volume,
                 c.treble, c.bass, c.reverb, c.tremSpeed, c.tremIntensity,
                 c.inTrim, c.master, load);
     std::fflush(stdout);
@@ -185,11 +185,11 @@ int main(int argc, char** argv) {
             c = engine.ctl;
         }
         switch (ch) {
-            case 'o': c.odOn = !c.odOn; break;
-            case 'd': c.odDrive = bump(c.odDrive, -0.05); break;
-            case 'D': c.odDrive = bump(c.odDrive, 0.05); break;
-            case 'l': c.odLevel = bump(c.odLevel, -0.05); break;
-            case 'L': c.odLevel = bump(c.odLevel, 0.05); break;
+            case 'o': c.aOn = !c.aOn; break;
+            case 'd': c.aDrive = bump(c.aDrive, -0.05); break;
+            case 'D': c.aDrive = bump(c.aDrive, 0.05); break;
+            case 'l': c.aLevel = bump(c.aLevel, -0.05); break;
+            case 'L': c.aLevel = bump(c.aLevel, 0.05); break;
             case 'v': c.volume = bump(c.volume, -0.05); break;
             case 'V': c.volume = bump(c.volume, 0.05); break;
             case 't': c.treble = bump(c.treble, -0.05); break;
@@ -220,3 +220,4 @@ int main(int argc, char** argv) {
     std::printf("\nbye\n");
     return 0;
 }
+
