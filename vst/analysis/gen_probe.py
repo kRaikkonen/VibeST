@@ -2,7 +2,7 @@
 # directly -- low level so the stage is linear. Writes probe.wav + probe.json.
 import numpy as np, struct, json
 SR=48000
-freqs=[250,500,750,1000,1500,2000,2500,3000,3500,4000,4400,4800,5200,5600,6000,7000,8000,10000]
+freqs=[233,467,731,1031,1471,2131,2971,3529,4127,4729,5333,5927,6469,7333,8237,9973]  # non-fs/N to avoid measurement aliasing
 amp=0.03
 segs=[]; meta={}; cur=0
 def add(name,x):

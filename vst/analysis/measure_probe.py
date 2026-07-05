@@ -20,7 +20,7 @@ g=[]
 for f in freqs:
     a0,a1=meta[f"f{f}"]; gi=amp_at(xin,a0,a1,f); go=amp_at(y,a0,a1,f)
     g.append(20*np.log10(go/gi) if gi>0 else 0)
-k1=freqs.index(1000); ref=g[k1]
+k1=min(range(len(freqs)),key=lambda i:abs(freqs[i]-1000)); ref=g[k1]
 print(f"stage gain vs freq (dB rel 1kHz)  [{sys.argv[1].split(chr(92))[-1]}]:")
 for f,gg in zip(freqs,g):
     bar="#"*max(0,int((gg-ref)/2)+1) if gg-ref>-2 else ""

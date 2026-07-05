@@ -18,7 +18,7 @@ def curve(path):
             s=sig[a0+2000:a1-2000]; t=np.arange(len(s))/SR
             return np.abs(np.sum(s*np.exp(-2j*np.pi*f*t)))/len(s)*2
         gi=A(xi); go=A(yy); g.append(20*np.log10(go/gi) if gi>0 else -120)
-    g=np.array(g); return g-g[freqs.index(1000)]
+    g=np.array(g); k1=min(range(len(freqs)),key=lambda i:abs(freqs[i]-1000)); return g-g[k1]
 gn=curve(r"D:\sd1\vst\renders\nam_probe.wav")
 gm=curve(r"D:\sd1\vst\renders\head_probe.wav")
 band=[i for i,f in enumerate(freqs) if 200<=f<=6000]
