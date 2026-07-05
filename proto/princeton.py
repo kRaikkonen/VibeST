@@ -211,8 +211,11 @@ class CathodyneRT:
 # --- 6V6 push-pull + output transformer + speaker load ------------------------
 
 class PowerStageRT:
-    def __init__(self, fs, Raa=8000.0, Lm=15.0, m_half=15.8,
+    def __init__(self, fs, Raa=8000.0, Lm=45.0, m_half=15.8,
                  idle_ma=30.0, max_iter=60, tol=1e-9):
+        # Lm (OT primary magnetizing inductance) calibrated 15->45H against the
+        # real 1964 Princeton NAM head capture: sets the deep-LF corner (117Hz
+        # was 2dB dark at 15H). Leakage rolloff calibrated 20->9kHz likewise.
         self.tube = P_6V6
         self.T = 1.0 / fs
         self.Lm = Lm
@@ -232,6 +235,11 @@ class PowerStageRT:
         self.spk = np.zeros(3)           # [i_s, vt, iLc]
         self.spk_hist = np.zeros(3)
         self.v_s_prev = 0.0
+        # flat-load (load-box) mode: drive an 8 ohm RESISTIVE load instead of
+        # the reactive speaker, so the secondary V has NO impedance-rise HF
+        # boost — matches how a NAM head capture is taken (into a load box).
+        self.flat_load = False
+        self.g_ref = 1.0 / 8.0
         self._Cmes, self._Lces, self._Rres, self._Lvc = Cmes, Lces, Rres, Lvc
         # bias: calibrate to idle current (schematic -34V nominal; Koren
         # parameter sets need the operating-point match, docs 'known simpl.')
@@ -252,10 +260,16 @@ class PowerStageRT:
         # loop gain RISES with f (measured, loop_probe.py) and the NFB loop
         # oscillates. 500 pF is a typical small-OT value (to measure).
         self.Cw = 500e-12
-        self.iCw_prev = 0.0
+        # series damping resistor on the winding cap (backward-Euler companion).
+        # Undamped (trapezoidal) Cw rings at Nyquist and, with the NFB loop
+        # delay, self-oscillates; Rw tames the HF plate-load resonance so the
+        # feedback can be broadband. Matches the C++ engine (setRw).
+        self.Rw = 33e3
+        self.gcw = (self.Cw / T) / (1.0 + self.Rw * self.Cw / T)
+        self.vCw_prev = 0.0
         # OT leakage inductance + stray C: one-pole rolloff ~20 kHz on the
         # secondary. Second real HF mechanism, kept from the leakage model.
-        wl = 2 * np.pi * 20e3
+        wl = 2 * np.pi * 9e3
         self.lk_b = wl * self.T / (2.0 + wl * self.T)
         self.lk_a = (2.0 - wl * self.T) / (2.0 + wl * self.T)
         self.lk_x1 = 0.0
@@ -280,6 +294,8 @@ class PowerStageRT:
         g2 = gclamp(bias + vg2_ac)
         self._spk_hist_update()
         ih = self.Ainv @ self.spk_hist   # affine speaker: i_s = geq*v_s + ih[0]
+        geq_eff = self.g_ref if self.flat_load else self.geq
+        ih0 = 0.0 if self.flat_load else ih[0]
         vaa_old = self.vaa               # vaa[n-1] for the trapezoid
         vaa = vaa_old
         lo, hi = -2.2 * vA, 2.2 * vA     # F is strictly decreasing in vaa
@@ -288,8 +304,8 @@ class PowerStageRT:
             i1_, _ = tube.currents(g1, vB, max(vA - 0.5 * v, 0.5))
             i2_, _ = tube.currents(g2, vB, max(vA + 0.5 * v, 0.5))
             iLn_ = self.iL + (T / (2 * self.Lm)) * (v + vaa_old)
-            i_s_ = self.geq * v / (2 * self.m) + ih[0]
-            iCw_ = (2 * self.Cw / T) * (v - vaa_old) - self.iCw_prev
+            i_s_ = geq_eff * v / (2 * self.m) + ih0
+            iCw_ = self.gcw * (v - self.vCw_prev)
             return (i1_ - i2_) - iLn_ - i_s_ / (2 * self.m) - iCw_
 
         for _ in range(self.max_iter):
@@ -313,7 +329,7 @@ class PowerStageRT:
         i1, s1 = tube.currents(g1, vB, vp1)
         i2, s2 = tube.currents(g2, vB, vp2)
         self.iL = self.iL + (T / (2 * self.Lm)) * (vaa + vaa_old)
-        self.iCw_prev = (2 * self.Cw / T) * (vaa - vaa_old) - self.iCw_prev
+        self.vCw_prev = vaa - self.Rw * (self.gcw * (vaa - self.vCw_prev))
         v_s = vaa / (2 * self.m)
         b = np.array([v_s + self.spk_hist[0], self.spk_hist[1],
                       self.spk_hist[2]])
@@ -409,7 +425,8 @@ class ReverbMixerRT:
 
 class PrincetonReverb:
     def __init__(self, fs, volume=0.5, treble=0.5, bass=0.5,
-                 reverb=0.3, trem_speed=0.5, trem_intensity=0.0):
+                 reverb=0.3, trem_speed=0.5, trem_intensity=0.0,
+                 flat_load=False):
         self.fs = fs
         p12 = T_12AX7
         self.v1a = TriodeStageRT(p12, fs, B=240.0, Rp=100e3, Rk=1500.0,
@@ -434,6 +451,7 @@ class PrincetonReverb:
         self.R_nfb, self.R_tail = 2700.0, 47.0
         self.pi = CathodyneRT(fs, B=240.0)
         self.power = PowerStageRT(fs)
+        self.power.flat_load = flat_load
         self.psu = PSU(fs)
         self.trem_hz = 3.0 + 4.0 * trem_speed     # circuit-derived range
         self.trem_depth = 4.0 * trem_intensity    # volts of bias wiggle
@@ -444,6 +462,8 @@ class PrincetonReverb:
                                     # (test/calib_rev.cpp grid search),
                                     # pending real-pan measurement
         self.probe = None           # optional per-sample NFB injection (debug)
+        self.nfb_hz = 250.0         # NFB loop LP corner (250 = stability hack;
+                                    # real amp is broadband — raise to widen)
 
     def _rev_hp(self, x):
         y = np.empty_like(x)
@@ -487,7 +507,7 @@ class PrincetonReverb:
         # stability compromise of the delayed discrete loop — implicit solve
         # is the proper fix, tracked in PLAN.)
         fb_lp = 0.0
-        fb_a = 2 * np.pi * 250.0 / (fs + 2 * np.pi * 250.0)
+        fb_a = 2 * np.pi * self.nfb_hz / (fs + 2 * np.pi * self.nfb_hz)
         t = np.arange(n) / fs
         trem = self.trem_depth * np.sin(2 * np.pi * self.trem_hz * t) \
             if self.trem_depth > 0 else np.zeros(n)

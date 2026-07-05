@@ -143,6 +143,7 @@ int main(int argc,char**argv){
     pa::Controls c=eng.ctl;
     c.ampKind=ampKind;
     if(!pedals){c.aOn=false;c.bOn=false;}
+    if((int)getf("gateoff",0))c.gateOn=false;
     if(!postfx){c.delayOn=false;c.roomOn=false;c.eqOn=false;c.chorusOn=false;}
     if(master>0)c.master=master;
     if(treble>=0)c.treble=treble;

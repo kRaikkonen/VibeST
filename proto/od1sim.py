@@ -115,12 +115,13 @@ JRC4558 = OpampMacro("JRC4558", A0=1e5, GBW=3e6, SR=1.7e6, Vdz=0.0)
 # --- diode network: D101+D102 series vs D103 anti-parallel ------------------
 
 class ClipperDiodes:
-    """Asymmetric feedback clipper: 2 series 1N4148 one way, 1 the other."""
+    """Feedback clipper: nDown series diodes one way, nUp the other. Default
+    2/1 = OD-1 / SD-1 asymmetric; 1/1 = TS808/TS9 symmetric."""
 
-    def __init__(self, p: OD1Params):
+    def __init__(self, p: OD1Params, nDown=2, nUp=1):
         self.Is = p.diode_Is
-        self.nvt_pair = 2.0 * p.diode_N * p.VT
-        self.nvt_single = p.diode_N * p.VT
+        self.nvt_pair = nDown * p.diode_N * p.VT
+        self.nvt_single = nUp * p.diode_N * p.VT
 
     def i(self, v):
         a = np.clip(v / self.nvt_pair, -80.0, 80.0)
@@ -169,12 +170,12 @@ class OnePoleHPExact:
 class DriveStageRT:
     def __init__(self, p: OD1Params, fs: float, drive: float = 1.0,
                  opamp: OpampMacro | None = TL072,
-                 max_iter: int = 80, tol: float = 1e-11):
+                 max_iter: int = 80, tol: float = 1e-11, clipper=None):
         self.p = p
         self.fs = fs
         self.T = 1.0 / fs
         self.Rf = p.Rf(drive)
-        self.diodes = ClipperDiodes(p)
+        self.diodes = clipper if clipper is not None else ClipperDiodes(p)
         self.opamp = opamp
         self.max_iter = max_iter
         self.tol = tol

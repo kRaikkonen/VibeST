@@ -148,8 +148,8 @@ struct Engine {
           // to match the 384 k reference sample-for-sample (diag_od1).
           pedalA(192000.0, 0.5, 0.8, od1::RC3403A(), od1::Params{}, 2),
           pedalB(192000.0, 0.5, 0.8, od1::RC3403A(), od1::Params{}, 2),
-          fxA(pedals::Kind::SD1, 192000.0, 0.6, 0.35, 0.5, 2),
-          fxB(pedals::Kind::TS808, 192000.0, 0.5, 0.35, 0.5, 2),
+          fxA(pedals::Kind::SD1, 192000.0, 0.6, 0.35, 0.5, 2, true),   // whitebox tone
+          fxB(pedals::Kind::TS808, 192000.0, 0.5, 0.35, 0.5, 2, true), // whitebox tone
           plexiAmp(eco_ ? 48000.0 : 96000.0, 0.6, 0.6, 0.4, 0.5, 1.0),
           amp(eco_ ? 48000.0 : 96000.0, princeton::AmpControls{},
               makeTank()) {
@@ -202,7 +202,7 @@ struct Engine {
             pedals::Kind::OD1, pedals::Kind::SD1,
             pedals::Kind::TS808, pedals::Kind::MadRed};
         if (kind != oldKind && kind != 0)
-            fx = pedals::Pedal(kinds[kind], 192000.0, drive, level, tone, 2);
+            fx = pedals::Pedal(kinds[kind], 192000.0, drive, level, tone, 2, true);  // whitebox
         if (kind == 0) {
             od.setDrive(drive);
             od.setLevel(level);

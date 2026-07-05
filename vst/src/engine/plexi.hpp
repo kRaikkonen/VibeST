@@ -43,7 +43,9 @@ public:
         // 5 bass/mid,6 treb wiper(out),7 (unused vol),8 bass-cap
         R(1,2,Rsrc);
         Cap(2,3,470e-12);
-        R(3,6,(1.0-tw)*RT); R(6,5,tw*RT);
+        R(3,6,(1.0-tw)*RT); R(6,4,tw*RT);      // treble pot lower -> slope node
+                                               // 4 ("B"), not mid node 5 (same
+                                               // wiring bug fixed in Fender FMV)
         R(2,4,33e3);
         Cap(4,8,22e-9); R(8,5,bw*RB);
         Cap(4,5,22e-9);
@@ -102,10 +104,10 @@ public:
           power_(fs, 3400.0, 22.0, 22.0, 40.0, princeton::PEL34(), 470.0, 480.0),
           psu_(fs),
           gain_(gain), master_(master) {
-        double wc = 2.0 * princeton::kPi * 8000.0;   // full-band NFB (OT-limited)
-        fbA_ = wc / (fs + wc);
-        double wp = 2.0 * princeton::kPi * 1900.0;   // presence shelf corner
-        prA_ = wp / (fs + wp);
+        setPresence(presence_);                      // sets the NFB presence corner
+        power_.setOtBw(4500.0);                      // Marshall OT darker than the
+                                                     // Princeton: rolls the presence
+                                                     // rise into a peak above ~5 kHz
         double wb = 2.0 * princeton::kPi * 3000.0;   // bright-cap corner
         brA_ = wb / (fs + wb);
     }
@@ -118,12 +120,18 @@ public:
     void setOtBw(double hz) { power_.setOtBw(hz); }
     double piBias() const { return pi_.vkBias(); }   // debug: LTP cathode V
     void setTone(double t, double b, double m) { tone_.rebuild(fs_, t, b, m); }
-    // Presence: on the real amp a 22k pot + 0.1u in the NFB tail shunts HF
-    // feedback -> more highs when up. Our PI loop runs open, so the same
-    // audible effect is a pre-PI high shelf (0..+7 dB above ~1.9 kHz).
-    // Documented approximation; proper NFB presence lands with the implicit
-    // loop solve.
-    void setPresence(double p) { presence_ = std::clamp(p, 0.0, 1.0); }
+    // Presence — the REAL mechanism: the 22k pot + 0.1µF in the NFB tail shunts
+    // HF feedback to ground, so above the corner the loop gain falls and the
+    // closed-loop gain rises back toward open-loop -> a PRESENCE PEAK (with the
+    // deep Marshall NFB this is the +12 dB @2-4 kHz "bark", rolled off >5 kHz by
+    // the OT). Higher presence = lower feedback-LP corner = broader/taller peak.
+    // (Replaces the old pre-PI shelf approximation.)
+    void setPresence(double p) {
+        presence_ = std::clamp(p, 0.0, 1.0);
+        double fc = 6000.0 * std::pow(900.0 / 6000.0, presence_);   // 6k..0.9k
+        double wc = 2.0 * princeton::kPi * fc;
+        fbA_ = wc / (fs_ + wc);
+    }
     // High Treble: channel I's bright voicing (470p/.005u bright caps across
     // Volume I) — blends a high-passed component into the gain path.
     void setBright(double b) { bright_ = std::clamp(b, 0.0, 1.0); }
@@ -140,9 +148,7 @@ public:
             y = v2_.step(y * (0.1 + 1.4 * gain_));
             y = cf_.step(y);                    // V2B cathode-follower buffer
             y = tone_.step(y);
-            // presence shelf (see setPresence)
-            prLp_ += prA_ * (y - prLp_);
-            y = y + presence_ * 1.3 * (y - prLp_);
+            // presence is now in the NFB loop (see setPresence), not a pre-shelf.
             double outT, outB;
             // LTP has real gain (~25), so the makeup is far smaller than the
             // unity cathodyne's used to be. NFB is injected into the LTP's

@@ -508,7 +508,7 @@ private:
 
 class PowerStage {
 public:
-    explicit PowerStage(double fs, double Raa = 8000.0, double Lm = 15.0,
+    explicit PowerStage(double fs, double Raa = 8000.0, double Lm = 45.0,
                         double mHalf = 15.8, double idleMa = 30.0,
                         Pentode tube = P6V6(), double vbSup = 400.0,
                         double vpSup = 410.0)
@@ -535,10 +535,12 @@ public:
         }
         vbias_ = vg;
         iPlates_ = 2 * idleMa * 1e-3;
-        // OT winding capacitance + leakage one-pole (20 kHz)
+        // OT winding capacitance + leakage one-pole. Lm (45H) and the leakage
+        // corner (9 kHz) calibrated against the real 1964 Princeton NAM head:
+        // set the deep-LF corner and the top-octave rolloff respectively.
         Cw_ = 500e-12;
         gcw_ = (Cw_ / T_) / (1.0 + Rw_ * Cw_ / T_);   // damped Cw conductance
-        double wl = 2 * kPi * 20e3;
+        double wl = 2 * kPi * 9e3;
         lkB_ = wl * T_ / (2.0 + wl * T_);
         lkA_ = (2.0 - wl * T_) / (2.0 + wl * T_);
     }
@@ -791,7 +793,9 @@ public:
         stampR(1, 2, Rsrc);
         stampC(2, 3, 250e-12);
         stampR(3, 6, (1.0 - tw) * RT);
-        stampR(6, 5, tw * RT);
+        stampR(6, 4, tw * RT);       // treble pot lower -> slope node 4 ("B"),
+                                     // NOT the mid node 5 (was a wiring bug that
+                                     // stripped the bass pot of all authority)
         stampR(2, 4, 100e3);
         stampC(4, 8, 0.1e-6);
         stampR(8, 5, bw * RB);

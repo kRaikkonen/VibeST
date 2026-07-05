@@ -25,6 +25,7 @@ class LinearNetwork:
         self.G = np.zeros((n_nodes, n_nodes))
         self.C = np.zeros((n_nodes, n_nodes))
         self.src_node = None
+        self.opamps = []          # ideal op-amps: (vplus, vminus, vout)
 
     def _stamp(self, M, a, b, val):
         if a > 0:
@@ -47,11 +48,21 @@ class LinearNetwork:
         self.src_node = node
         return self
 
+    def Opamp(self, vplus, vminus, vout):
+        """Ideal op-amp (infinite gain, no input current): forces v+ = v-,
+        the output node vout is driven by a free current i_op (nullor)."""
+        self.opamps.append((vplus, vminus, vout))
+        return self
+
     def compile(self, out_node):
-        """MNA with source row: unknowns x = [v1..vn, i_src]."""
+        """MNA (trapezoidal) with source row + one extra unknown per op-amp.
+        unknowns x = [v1..vn, i_src, i_op1..i_opm]. Op-amp rows are algebraic
+        (no memory) so they live only in A1; A2 leaves them zero."""
         n = self.n
-        A1 = np.zeros((n + 1, n + 1))
-        A2 = np.zeros((n + 1, n + 1))
+        m = len(self.opamps)
+        N = n + 1 + m
+        A1 = np.zeros((N, N))
+        A2 = np.zeros((N, N))
         k = 2.0 * self.fs
         A1[:n, :n] = self.G + k * self.C
         A2[:n, :n] = -self.G + k * self.C
@@ -59,11 +70,16 @@ class LinearNetwork:
         A1[s, n] = 1.0
         A1[n, s] = 1.0
         A2[n, s] = -1.0          # v_s[n] + v_s[n-1] = u[n] + u[n-1]
-        B = np.zeros(n + 1)
+        for j, (vp, vm, vo) in enumerate(self.opamps):
+            col = n + 1 + j
+            A1[vo - 1, col] = -1.0            # i_op injected into vout node
+            A1[col, vp - 1] = 1.0             # constraint v+ - v- = 0
+            A1[col, vm - 1] = -1.0
+        B = np.zeros(N)
         B[n] = 1.0
         self._M = np.linalg.solve(A1, A2)
         self._K = np.linalg.solve(A1, B)
-        self._x = np.zeros(n + 1)
+        self._x = np.zeros(N)
         self._u1 = 0.0
         self._out = out_node - 1
         return self
@@ -81,17 +97,24 @@ class LinearNetwork:
         return y
 
     def freq_response(self, freqs, out_node):
-        """Analytic continuous-time response for validation."""
+        """Analytic continuous-time response for validation (incl. op-amps)."""
         n = self.n
+        m = len(self.opamps)
+        N = n + 1 + m
         s_idx = self.src_node - 1
         H = np.empty(len(freqs), dtype=complex)
         for i, f in enumerate(freqs):
             s = 2j * np.pi * f
-            A = np.zeros((n + 1, n + 1), dtype=complex)
+            A = np.zeros((N, N), dtype=complex)
             A[:n, :n] = self.G + s * self.C
             A[s_idx, n] = 1.0
             A[n, s_idx] = 1.0
-            b = np.zeros(n + 1, dtype=complex)
+            for j, (vp, vm, vo) in enumerate(self.opamps):
+                col = n + 1 + j
+                A[vo - 1, col] = -1.0
+                A[col, vp - 1] = 1.0
+                A[col, vm - 1] = -1.0
+            b = np.zeros(N, dtype=complex)
             b[n] = 1.0
             x = np.linalg.solve(A, b)
             H[i] = x[out_node - 1]
@@ -116,13 +139,13 @@ def fender_tone_stack(fs, treble=0.5, bass=0.5, volume=0.7, Rsrc=38e3):
     net.Vsrc(1)
     net.R(1, 2, max(Rsrc, 1.0))          # V1A plate output impedance
     net.Cap(2, 3, 250e-12)               # treble cap
-    net.R(3, 6, max((1.0 - tw) * RT, 1.0))   # treble pot upper
-    net.R(6, 5, max(tw * RT, 1.0))           # treble pot lower
-    net.R(2, 4, 100e3)                   # slope resistor
-    net.Cap(4, 8, 0.1e-6)                # bass cap
-    net.R(8, 5, max(bw * RB, 1.0))       # bass pot (rheostat)
-    net.Cap(4, 5, 0.047e-6)              # mid cap
-    net.R(5, 0, 6800.0)                  # fixed mid resistor
+    net.R(3, 6, max((1.0 - tw) * RT, 1.0))   # treble pot upper (wiper=6)
+    net.R(6, 4, max(tw * RT, 1.0))           # treble pot lower -> slope node
+    net.R(2, 4, 100e3)                   # slope resistor -> node 4 = "B"
+    net.Cap(4, 8, 0.1e-6)                # bass cap (B -> bass pot)
+    net.R(8, 5, max(bw * RB, 1.0))       # bass pot (rheostat) -> mid node 5
+    net.Cap(4, 5, 0.047e-6)              # mid cap (B -> mid node)
+    net.R(5, 0, 6800.0)                  # fixed mid resistor (mid node -> gnd)
     net.R(6, 7, max((1.0 - vw) * RV, 1.0))   # volume pot upper
     net.R(7, 0, max(vw * RV, 1.0))           # volume pot lower
     return net

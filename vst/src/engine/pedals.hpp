@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include "od1.hpp"
+#include "pedal_tone.hpp"      // PURE WHITE-BOX op-amp MNA tone circuits
 
 namespace pedals {
 
@@ -146,33 +147,46 @@ inline DriveParams driveParamsFor(Kind k) {
 // A complete pedal: input buffer -> op-amp clipper -> tone -> level.
 class Pedal {
 public:
+    // whitebox=true -> PURE WHITE-BOX tone (real op-amp active RC circuit, MNA);
+    // false -> HYBRID Tilt crossfade (kept for reference / A-B).
     Pedal(Kind kind, double fs, double drive = 0.5, double level = 0.7,
-          double tone = 0.5, int driveOS = 2)
+          double tone = 0.5, int driveOS = 2, bool whitebox = false)
         : kind_(kind), drive_(driveParamsFor(kind), fs, drive, driveOS),
           tilt_(kind == Kind::MadRed ? 1500.0 : 723.0, fs),
-          hpOut_(100e3, 1e-6, fs), level_(level) {
+          hpOut_(100e3, 1e-6, fs), level_(level), fs_(fs), whitebox_(whitebox) {
         tilt_.set(tone);
         // OD-1 has a fixed 884 Hz filter instead of a tone knob
         od1Filt_ = (kind == Kind::OD1);
+        if (whitebox_) buildTone(tone);
     }
     void setDrive(double d) { drive_.setDrive(d); }
     void setLevel(double l) { level_ = l; }
-    void setTone(double t) { tilt_.set(t); }
+    void setTone(double t) {
+        if (whitebox_) { if (t != lastTone_) { buildTone(t); lastTone_ = t; } }
+        else tilt_.set(t);
+    }
 
     double step(double x) {
         double y = drive_.step(x);
-        y = tilt_.step(y);
+        y = whitebox_ ? toneNet_.step(y) : tilt_.step(y);   // WB: real MNA tone
         y *= level_;
         return hpOut_.step(y);
     }
 
 private:
+    void buildTone(double t) {
+        if (kind_ == Kind::SD1 || kind_ == Kind::OD1)
+            toneNet_ = pedal::sd1_tone(fs_, t);
+        else                                    // TS808 / MadRed -> TS tone
+            toneNet_ = pedal::ts808_tone(fs_, t);
+    }
     Kind kind_;
     OpampDrive drive_;
-    Tilt tilt_;
+    Tilt tilt_;                    // HYBRID crossfade tone (marked; kept for A-B)
+    pedal::MnaTone toneNet_;       // PURE WHITE-BOX tone (op-amp active RC, MNA)
     od1::OnePoleHP hpOut_;
-    double level_;
-    bool od1Filt_ = false;
+    double level_, fs_, lastTone_ = -1.0;    // guard: rebuild MnaTone only on change
+    bool od1Filt_ = false, whitebox_ = false;
 };
 
 }  // namespace pedals

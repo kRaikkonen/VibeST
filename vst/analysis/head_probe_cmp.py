@@ -6,8 +6,9 @@ import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
 SR=48000
 def load(p):
     b=open(p,'rb').read(); i=b.find(b'data'); n=struct.unpack('<I',b[i+4:i+8])[0]
-    d=b[i+8:i+8+n]; fmt=struct.unpack('<H',b[20:22])[0]
-    return np.frombuffer(d,'<f4').astype(float) if fmt==3 else np.frombuffer(d,'<i2').astype(float)/32768
+    d=b[i+8:i+8+n]; fmt=struct.unpack('<H',b[20:22])[0]; ch=struct.unpack('<H',b[22:24])[0]
+    v=np.frombuffer(d,'<f4').astype(float) if fmt==3 else np.frombuffer(d,'<i2').astype(float)/32768
+    return v[::ch] if ch>1 else v            # de-interleave stereo -> L
 J=json.load(open(r"D:\sd1\vst\renders\probe.json")); freqs=J["freqs"]; meta=J["meta"]
 xin=load(r"D:\sd1\vst\renders\probe.wav")
 def curve(path):

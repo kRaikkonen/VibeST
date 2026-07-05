@@ -30,6 +30,12 @@ vst/renders/ir/
 __pycache__/
 *.pyc
 
+# --- NAM-derived measurement caches (binary, regenerable, from private captures) ---
+proto/_*.npy
+proto/_*.npz
+proto/_*.json
+proto/sd1_cache/
+
 # --- editor / os ---
 .DS_Store
 Thumbs.db
