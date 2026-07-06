@@ -25,7 +25,7 @@ constexpr int IDC_IN = 100, IDC_OUT = 101, IDC_EXCL = 102, IDC_START = 103,
               IDC_PRESET = 130, IDC_RECTOMODE = 131, IDC_RECTIFIER = 132,
               IDC_COMPON = 133, IDC_METER = 134, IDC_REVERBON = 135,
               IDC_TUNER = 136, IDC_PITCHON = 137, IDC_TUNERON = 138,
-              IDC_TRANSPOSE = 139, IDC_SHIFTEDIT = 150,
+              IDC_TRANSPOSE = 139, IDC_SHIFTEDIT = 150, IDC_SRATE = 152,
               IDC_EQ0 = 200;              // 200..208 = 9 EQ faders
 constexpr int IDC_SLIDER0 = 120;   // 10 sliders: 120..129
 constexpr int IDC_VAL0 = 140;      // value labels: 140..149
@@ -109,7 +109,7 @@ HWND gSliders[NP], gVals[NP], gParamLbl[NP], gStatus, gInCombo, gOutCombo,
      gCabLabel, gPedalKind, gPedalKindB, gAmpKind, gCabKind,
      gDelayOn, gEqOn, gHpfOn, gLpfOn, gEqFader[9], gEqVal[9],
      gGateOn, gChorusOn, gRoomOn, gPreset, gRectoMode, gRectifier, gCompOn, gMeter,
-     gReverbOn, gTuner, gTunerNote, gPitchOn, gTunerOn, gTranspose, gShiftEdit;
+     gReverbOn, gTuner, gTunerNote, gPitchOn, gTunerOn, gTranspose, gShiftEdit, gSrCombo;
 HFONT gFont;
 HFONT gFontBig = nullptr;   // large bold font for the prominent Master value
 RECT  gMasterFrame = {};    // red highlight box drawn around the Master control
@@ -299,7 +299,9 @@ void startStop(HWND hwnd) {
         int chSel = static_cast<int>(
             SendMessageW(gInCh, CB_GETCURSEL, 0, 0));
         if (chSel < 0) chSel = 0;
-        if (!gAsio.start(sel, period, gEngine, info, sizeof(info), chSel)) {
+        int srSel = static_cast<int>(SendMessageW(gSrCombo, CB_GETCURSEL, 0, 0));
+        unsigned devRate = (srSel == 1) ? 44100u : 48000u;
+        if (!gAsio.start(sel, period, gEngine, info, sizeof(info), chSel, devRate)) {
             std::wstring msg = widen(info);
             SetWindowTextW(gStatus, msg.c_str());
             msg += L"\n\nClose the DAW / anything holding the ASIO driver, "
@@ -419,6 +421,11 @@ void buildUi(HWND hwnd) {
     gStatus = mk(hwnd, L"STATIC", L"stopped", 0, 12, 132, 424, 20,
                  IDC_STATUS);
 
+    mk(hwnd, L"STATIC", L"SR:", 0, 126, 162, 24, 18, 0);   // ASIO output sample rate
+    gSrCombo = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST, 150, 158, 76, 160, IDC_SRATE);
+    for (auto* n : {L"48 kHz", L"44.1 kHz"})
+        SendMessageW(gSrCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(n));
+    SendMessageW(gSrCombo, CB_SETCURSEL, 0, 0);   // default 48 kHz (engine-native, no resample)
     gEco = mk(hwnd, L"BUTTON", L"Eco (low CPU)", BS_AUTOCHECKBOX,
               12, 158, 110, 22, IDC_ECO);
     SendMessageW(gEco, BM_SETCHECK, BST_CHECKED, 0);   // default: on (48 kHz, avoids ASIO overrun)
