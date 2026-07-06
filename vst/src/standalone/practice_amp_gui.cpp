@@ -288,6 +288,7 @@ void startStop(HWND hwnd) {
         gRunning = false;
         gUsingAsio = false;
         SetWindowTextW(gStartBtn, L"Start");
+        InvalidateRect(gStartBtn, nullptr, FALSE);   // repaint green
         SetWindowTextW(gStatus, L"stopped");
         return;
     }
@@ -338,6 +339,7 @@ void startStop(HWND hwnd) {
     }
     gRunning = true;
     SetWindowTextW(gStartBtn, L"Stop");
+    InvalidateRect(gStartBtn, nullptr, FALSE);   // repaint red
     gStatusBase = widen(info);
     SetWindowTextW(gStatus, gStatusBase.c_str());
 }
@@ -426,7 +428,7 @@ void buildUi(HWND hwnd) {
     for (auto* n : {L"48 kHz", L"44.1 kHz"})
         SendMessageW(gSrCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(n));
     SendMessageW(gSrCombo, CB_SETCURSEL, 0, 0);   // default 48 kHz (engine-native, no resample)
-    gStartBtn = mk(hwnd, L"BUTTON", L"Start", BS_PUSHBUTTON,
+    gStartBtn = mk(hwnd, L"BUTTON", L"Start", BS_OWNERDRAW,   // green=Start / red=Stop
                    344, 102, 90, 26, IDC_START);
     gStatus = mk(hwnd, L"STATIC", L"stopped", 0, 12, 132, 424, 20,
                  IDC_STATUS);
@@ -824,6 +826,25 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_DRAWITEM: {
             auto* d = reinterpret_cast<DRAWITEMSTRUCT*>(lp);
+            if (d->CtlID == IDC_START) {   // green when Start (stopped), red when Stop (running)
+                RECT r = d->rcItem;
+                bool pressed = (d->itemState & ODS_SELECTED) != 0;
+                COLORREF bg = gRunning ? RGB(205, 45, 45) : RGB(40, 165, 70);
+                if (pressed) bg = gRunning ? RGB(165, 30, 30) : RGB(30, 135, 55);
+                HBRUSH b = CreateSolidBrush(bg);
+                FillRect(d->hDC, &r, b); DeleteObject(b);
+                FrameRect(d->hDC, &r, reinterpret_cast<HBRUSH>(GetStockObject(GRAY_BRUSH)));
+                HFONT old = reinterpret_cast<HFONT>(SelectObject(d->hDC, gFont));
+                SetBkMode(d->hDC, TRANSPARENT);
+                SetTextColor(d->hDC, RGB(255, 255, 255));
+                DrawTextW(d->hDC, gRunning ? L"Stop" : L"Start", -1, &r,
+                          DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                SelectObject(d->hDC, old);
+                if (d->itemState & ODS_FOCUS) {
+                    RECT fr = r; InflateRect(&fr, -3, -3); DrawFocusRect(d->hDC, &fr);
+                }
+                return TRUE;
+            }
             if (d->CtlID == IDC_METER) {
                 RECT r = d->rcItem;
                 FillRect(d->hDC, &r, reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
