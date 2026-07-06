@@ -15,6 +15,9 @@
 
 namespace {
 
+// App title / version. Bump the last number on every feature update.
+constexpr const wchar_t* kAppTitle = L"VibeST Practice AMP  v0.1.1  by kRaikkonen";
+
 constexpr int IDC_IN = 100, IDC_OUT = 101, IDC_EXCL = 102, IDC_START = 103,
               IDC_ODON = 104, IDC_CAB = 105, IDC_STATUS = 106, IDC_BUF = 107,
               IDC_BACKEND = 108, IDC_INCH = 109, IDC_ECO = 110,
@@ -678,6 +681,9 @@ void applyPreset(int i) {
     setSlider(6, p.tspd); setSlider(7, p.tint); setSlider(9, p.mstr);
     setSlider(0, p.ad);   setSlider(10, p.at);  setSlider(1, p.al);
     setSlider(11, p.bd);  setSlider(12, p.bt);  setSlider(13, p.bl);
+    // Graphic EQ is only on for the boot preset; every other preset loads with
+    // it off (a flat, un-EQ'd starting point).
+    SendMessageW(gEqOn, BM_SETCHECK, i == kBootPreset ? BST_CHECKED : BST_UNCHECKED, 0);
     relabelAmp();
     applyControls();
 }
@@ -939,7 +945,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nShow) {
                      | WS_MINIMIZEBOX, FALSE);
     HWND hwnd = CreateWindowExW(
         0, wc.lpszClassName,
-        L"VibeST Practice Amp  (white-box circuit simulation)",
+        kAppTitle,
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top,
         nullptr, nullptr, hInst, nullptr);
