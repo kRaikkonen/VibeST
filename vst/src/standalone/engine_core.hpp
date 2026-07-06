@@ -54,9 +54,15 @@ struct Controls {
     bool delayOn = true;
     double delayMs = 402, delayFb = 0.351, delayMix = 0.6;   // E.Level
     bool roomOn = true;
-    double roomAmount = 0.5, roomWidth = 0.3;      // now: reverb Decay + Mix
+    double roomAmount = 0.25, roomWidth = 0.8;     // studio room mic
+    bool reverbOn = false;                         // digital reverb (Freeverb)
+    double reverbDecay = 0.6, reverbMix = 0.35;
     bool compOn = false;                           // Keeley compressor (front of chain)
     double compSustain = 0.5, compLevel = 0.6;
+    bool pitchOn = false;                          // "shift pose" pitch shifter (input)
+    double pitchTarget = 440.0;                    // target A (Hz); ratio = target / 440
+    int transpose = 0;                             // digital capo: semitones (-12..+12)
+    bool tunerOn = true;                           // chromatic tuner (input pitch detect)
     bool eqOn = true;
     double eqDb[9] = {0, 2.6, 2.4, 0, 0, -2.2, 2.6, 4.3, -0.4};  // preset
     bool eqHpfOn = true, eqLpfOn = true;
@@ -177,9 +183,12 @@ struct Engine {
         // 18 Hz is below the lowest guitar note so it is tonally transparent.
         ampInHp.highpass(18.0, 0.707, eco_ ? 48000.0 : 96000.0);
         rebuildCab(0);
+        tuner_.init(48000.0);
+        pitch_.init(48000.0);
         gate_.init(48000.0);
         chorus_.init(48000.0);
         delay_.init(48000.0);
+        roomMic_.init(48000.0);
         reverb_.init(48000.0);
         comp_.init(48000.0);
         eq_.init(48000.0);
@@ -257,10 +266,16 @@ struct Engine {
         delay_.setTimeMs(c.delayMs);
         delay_.setFeedback(c.delayFb);
         delay_.setLevel(c.delayMix);   // delayMix is now the Boss E.Level
-        reverb_.setDecay(c.roomAmount);   // "Decay" slider (was Room amount)
-        reverb_.setMix(c.roomWidth);      // "Mix" slider (was Width)
+        roomMic_.setAmount(c.roomAmount);
+        roomMic_.setWidth(c.roomWidth);
+        reverb_.setDecay(c.reverbDecay);
+        reverb_.setMix(c.reverbMix);
         comp_.setSustain(c.compSustain);
         comp_.setLevel(c.compLevel);
+        // combined pitch shift: fine "shift pose" (Hz) × digital capo (semitones),
+        // applied by one shifter so the two don't stack artifacts.
+        double poseRatio = c.pitchOn ? c.pitchTarget / 440.0 : 1.0;
+        pitch_.setRatio(poseRatio * std::pow(2.0, c.transpose / 12.0));
         for (int b = 0; b < 9; ++b) eq_.setGainDb(b, c.eqDb[b]);
         eq_.setHpf(c.eqHpfOn, c.eqHpfHz);
         eq_.setLpf(c.eqLpfOn, c.eqLpfHz);
@@ -309,12 +324,15 @@ struct Engine {
         for (int i = 0; i < kChunk48; ++i)
             ipk = std::max(ipk, std::fabs(in[i]));
         inPeak.store(ipk);
+        bool doShift = ctl.pitchOn || ctl.transpose != 0;   // shift pose OR digital capo
         for (int i = 0; i < kChunk48; ++i) {
-            double g = static_cast<double>(in[i]);
+            if (ctl.tunerOn) tuner_.process(in[i]);  // measure the real played pitch (raw input)
+            double g = doShift ? pitch_.process(in[i]) : static_cast<double>(in[i]);
             if (ctl.gateOn) g = gate_.process(g);   // noise gate at the front
             if (ctl.compOn) g = comp_.process(g);   // Keeley compressor before the drives
             x48[i] = g * ctl.inTrim;
         }
+        tunerHz.store(ctl.tunerOn ? tuner_.freq() : 0.0f);   // expose to the GUI tuner display
 
         // ---- pedal slots A -> B (192 k, stiff stages substep internally) ---
         (void)x384;
@@ -399,9 +417,13 @@ struct Engine {
         };
         float opk = outPeak.load() * 0.95f;
         for (int i = 0; i < kChunk48; ++i) {
-            double L, R;
-            if (ctl.roomOn) reverb_.process(y48[i], L, R);   // digital reverb after delay
-            else { L = y48[i]; R = y48[i]; }
+            double L = y48[i], R = y48[i];
+            if (ctl.reverbOn) reverb_.process(y48[i], L, R);   // digital reverb (dry+wet stereo)
+            if (ctl.roomOn) {                                  // studio room mic ambience on top
+                double mL, mR; roomMic_.process(y48[i], mL, mR);
+                L = ctl.reverbOn ? L + (mL - y48[i]) : mL;
+                R = ctl.reverbOn ? R + (mR - y48[i]) : mR;
+            }
             if (ctl.eqOn) { L = eq_.step(0, L); R = eq_.step(1, R); }
             L = ceil(L * ctl.master);
             R = ceil(R * ctl.master);
@@ -431,9 +453,12 @@ struct Engine {
     dsp::Down2 ampDn;                  // 96->48 amp output (HQ)
     dsp::Biquad ampInHp;               // amp input DC blocker (18 Hz)
     dsp::Biquad cabHp, cabBump, cabPres, cabLp1, cabLp2;
+    fx::Tuner tuner_;                  // chromatic tuner (taps raw input, parallel)
+    fx::PitchShift pitch_;             // "shift pose" pitch shifter (input, before chain)
     fx::NoiseGate gate_;               // front of chain
     fx::CE2Chorus chorus_;             // after amp, before delay
     fx::BossDelay delay_;              // between amp and cab
+    fx::RoomMic roomMic_;              // studio room mic (stereo ambience, tail)
     fx::Reverb reverb_;                // digital reverb (Freeverb, after delay)
     fx::Compressor comp_;              // Keeley-style compressor (front, before drives)
     fx::GraphicEQ eq_;                 // 9-band graphic EQ (very tail)
@@ -454,6 +479,7 @@ struct Engine {
     Ring inRing, outRing;
     std::atomic<int> loadPct{0};    // EMA of engine time / realtime budget
     std::atomic<float> inPeak{0.0f}, outPeak{0.0f};   // level meters
+    std::atomic<float> tunerHz{0.0f};                 // detected input pitch (Hz) for the tuner
     std::atomic<int> drops{0};      // resync events (audible clicks) counter
     double dbgX96 = 0, dbgY96 = 0;  // debug: amp in/out peak
     double dbgY96sq = 0, dbgXdc = 0, dbgY48 = 0, dbgYcab = 0, dbgYcabSq = 0;

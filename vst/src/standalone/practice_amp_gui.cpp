@@ -23,7 +23,9 @@ constexpr int IDC_IN = 100, IDC_OUT = 101, IDC_EXCL = 102, IDC_START = 103,
               IDC_EQON = 117, IDC_HPFON = 118, IDC_LPFON = 119,
               IDC_GATEON = 120, IDC_CHORUSON = 121, IDC_ROOMON = 122,
               IDC_PRESET = 130, IDC_RECTOMODE = 131, IDC_RECTIFIER = 132,
-              IDC_COMPON = 133,
+              IDC_COMPON = 133, IDC_METER = 134, IDC_REVERBON = 135,
+              IDC_TUNER = 136, IDC_PITCHON = 137, IDC_TUNERON = 138,
+              IDC_TRANSPOSE = 139,
               IDC_EQ0 = 200;              // 200..208 = 9 EQ faders
 constexpr int IDC_SLIDER0 = 120;   // 10 sliders: 120..129
 constexpr int IDC_VAL0 = 140;      // value labels: 140..149
@@ -32,7 +34,7 @@ struct Param {
     const wchar_t* name;
     double lo, hi, def;
 };
-const Param kParams[25] = {
+const Param kParams[29] = {
     {L"Drive", 0, 1, 0.6},        {L"Level", 0, 1, 0.35},
     {L"Volume", 0, 1, 0.83},      {L"Treble", 0, 1, 0.63},
     {L"Bass", 0, 1, 0.43},        {L"Reverb", 0, 1, 0.15},
@@ -45,16 +47,20 @@ const Param kParams[25] = {
     {L"Time ms", 20, 1000, 402},  // 14: delay time
     {L"Feedbk", 0, 0.9, 0.351},   // 15: delay feedback
     {L"E.Level", 0, 1.5, 0.6},    // 16: delay repeat level (Boss E.Level)
-    {L"Decay", 0, 1, 0.5},        // 17: reverb decay / room size
-    {L"Mix", 0, 1, 0.3},          // 18: reverb mix
+    {L"Room", 0, 1, 0.25},        // 17: room mic amount
+    {L"Width", 0, 1, 0.8},        // 18: room mic width
     {L"Threshold", 0, 1, 0.25},   // 19: noise gate threshold
     {L"Rate", 0, 1, 0.4},         // 20: chorus rate
     {L"Depth", 0, 1, 0.55},       // 21: chorus depth
     {L"Mix", 0, 1, 1.0},          // 22: chorus mix
     {L"Sustain", 0, 1, 0.5},      // 23: compressor sustain
     {L"Comp Lvl", 0, 1, 0.6},     // 24: compressor level
+    {L"Decay", 0, 1, 0.6},        // 25: reverb decay
+    {L"R.Mix", 0, 1, 0.35},       // 26: reverb mix
+    {L"Ref A", 425, 455, 440},    // 27: tuner reference A (Hz, display-only)
+    {L"Shift Hz", 415, 470, 440}, // 28: pitch-shift target A (Hz)
 };
-constexpr int NP = 25;
+constexpr int NP = 29;
 // amp-dependent labels for sliders 2..7
 const wchar_t* kAmpLabels[4][6] = {
     {L"Volume", L"Treble", L"Bass", L"Reverb", L"Trem Speed",
@@ -74,14 +80,18 @@ struct Preset {
     const wchar_t* name; int amp, pa, pb; bool aOn, bOn;
     double vol, treb, bas, rev, tspd, tint, mstr, ad, at, al, bd, bt, bl;
 };
+// NOTE: the `mstr` field is a real Master value (slider range 0..0.2), NOT a 0..1
+// fraction. Earlier presets used 0.5-0.7 here, which setSlider clamped to 0.2 (max)
+// -> every preset pinned Master to full = ear-splitting on high-gain amps. Values
+// below are safe listening levels: clean amps a touch louder, high-gain lower.
 const Preset kPresets[] = {
-    {L"— Presets —",     0,3,1,true, true,  0.5,0.5,0.5,0.3,0.5,0.0,0.5, 0.5,0.5,0.5,0.5,0.5,0.5},
-    {L"Princeton Clean", 0,0,0,false,false, 0.4,0.6,0.5,0.3,0.0,0.0,0.6, 0.5,0.5,0.5,0.5,0.5,0.5},
-    {L"Plexi Crunch",    1,0,0,false,false, 0.7,0.6,0.4,0.6,0.5,0.5,0.6, 0.5,0.5,0.5,0.5,0.5,0.5},
-    {L"Recto Metal",     2,0,0,false,false, 0.8,0.4,0.4,0.9,0.4,0.3,0.5, 0.5,0.5,0.5,0.5,0.5,0.5},
-    {L"Dumble Clean",    3,0,0,false,false, 0.3,0.75,0.1,0.9,0.6,0.3,0.7,0.5,0.5,0.5,0.5,0.5,0.5},
-    {L"Klon → Dumble",   3,6,0,true, false, 0.35,0.75,0.1,0.9,0.6,0.3,0.7,0.6,0.6,0.7,0.5,0.5,0.5},
-    {L"TS+SD → Recto",   2,3,1,true, true,  0.75,0.4,0.4,0.85,0.4,0.3,0.5,0.5,0.5,0.55,0.5,0.5,0.52},
+    {L"— Presets —",     0,3,1,true, true,  0.5,0.5,0.5,0.3,0.5,0.0,0.030, 0.5,0.5,0.5,0.5,0.5,0.5},
+    {L"Princeton Clean", 0,0,0,false,false, 0.4,0.6,0.5,0.3,0.0,0.0,0.045, 0.5,0.5,0.5,0.5,0.5,0.5},
+    {L"Plexi Crunch",    1,0,0,false,false, 0.7,0.6,0.4,0.6,0.5,0.5,0.030, 0.5,0.5,0.5,0.5,0.5,0.5},
+    {L"Recto Metal",     2,0,0,false,false, 0.8,0.4,0.4,0.9,0.4,0.3,0.024, 0.5,0.5,0.5,0.5,0.5,0.5},
+    {L"Dumble Clean",    3,0,0,false,false, 0.3,0.75,0.1,0.9,0.6,0.3,0.045,0.5,0.5,0.5,0.5,0.5,0.5},
+    {L"Klon → Dumble",   3,6,0,true, false, 0.35,0.75,0.1,0.9,0.6,0.3,0.040,0.6,0.6,0.7,0.5,0.5,0.5},
+    {L"TS+SD → Recto",   2,3,1,true, true,  0.75,0.4,0.4,0.85,0.4,0.3,0.024,0.5,0.5,0.55,0.5,0.5,0.52},
 };
 
 pa::Engine* gEngine = nullptr;
@@ -95,8 +105,14 @@ HWND gSliders[NP], gVals[NP], gParamLbl[NP], gStatus, gInCombo, gOutCombo,
      gExcl, gOdOn, gOdB, gStartBtn, gBufCombo, gBackend, gInCh, gEco,
      gCabLabel, gPedalKind, gPedalKindB, gAmpKind, gCabKind,
      gDelayOn, gEqOn, gHpfOn, gLpfOn, gEqFader[9], gEqVal[9],
-     gGateOn, gChorusOn, gRoomOn, gPreset, gRectoMode, gRectifier, gCompOn;
+     gGateOn, gChorusOn, gRoomOn, gPreset, gRectoMode, gRectifier, gCompOn, gMeter,
+     gReverbOn, gTuner, gTunerNote, gPitchOn, gTunerOn, gTranspose;
 HFONT gFont;
+HFONT gFontBig = nullptr;   // large bold font for the prominent Master value
+RECT  gMasterFrame = {};    // red highlight box drawn around the Master control
+float gMeterLevel = 0.0f;   // latest output peak for the owner-drawn clip meter
+float gTunerCents = 0.0f;   // latest tuner deviation (cents, -50..+50) for the needle
+bool  gTunerActive = false; // a note is currently detected
 std::wstring gStatusBase;
 const int kBufSizes[4] = {64, 128, 256, 512};
 pa::AsioIO gAsio;
@@ -190,6 +206,16 @@ void applyControls() {
     c.compOn = SendMessageW(gCompOn, BM_GETCHECK, 0, 0) == BST_CHECKED;
     c.compSustain = sliderValue(23);
     c.compLevel = sliderValue(24);
+    c.reverbOn = SendMessageW(gReverbOn, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    c.reverbDecay = sliderValue(25);
+    c.reverbMix = sliderValue(26);
+    c.pitchOn = SendMessageW(gPitchOn, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    c.pitchTarget = sliderValue(28);
+    c.tunerOn = SendMessageW(gTunerOn, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    {   // digital capo: combo index 0..24 -> -12..+12 semitones
+        int ti = static_cast<int>(SendMessageW(gTranspose, CB_GETCURSEL, 0, 0));
+        c.transpose = (ti < 0 ? 12 : ti) - 12;
+    }
     for (int b = 0; b < 9; ++b) {   // faders: 0..100 -> -12..+12 dB
         int pos = static_cast<int>(SendMessageW(gEqFader[b], TBM_GETPOS, 0, 0));
         c.eqDb[b] = (50 - pos) * 12.0 / 50.0;   // top = +12, mid = 0
@@ -335,6 +361,9 @@ HWND mk(HWND parent, const wchar_t* cls, const wchar_t* text, DWORD style,
 
 void buildUi(HWND hwnd) {
     gFont = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+    gFontBig = CreateFontW(24, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                           CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
     mk(hwnd, L"STATIC", L"Driver:", 0, 12, 14, 60, 20, 0);
     gBackend = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST,
                   76, 10, 200, 120, IDC_BACKEND);
@@ -378,9 +407,6 @@ void buildUi(HWND hwnd) {
 
     gEco = mk(hwnd, L"BUTTON", L"Eco (low CPU)", BS_AUTOCHECKBOX,
               12, 158, 110, 22, IDC_ECO);
-    gGateOn = mk(hwnd, L"BUTTON", L"Noise Gate", BS_AUTOCHECKBOX,
-                 128, 158, 96, 22, IDC_GATEON);
-    SendMessageW(gGateOn, BM_SETCHECK, BST_CHECKED, 0);   // preset: on
     mk(hwnd, L"STATIC", L"Cab:", 0, 232, 162, 32, 18, 0);
     gCabKind = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST,
                   266, 158, 150, 140, IDC_CABKIND);
@@ -407,9 +433,35 @@ void buildUi(HWND hwnd) {
         updateValueLabel(i);
     };
 
-    // ---- PEDALBOARD: two stackable slots, A feeds B ------------------------
+    // ============ LEFT COLUMN: signal chain, input -> amp =================
+    // ---- TUNER + SHIFT POSE (input stage) --------------------------------
+    mk(hwnd, L"BUTTON", L"TUNER  &  SHIFT POSE  (input)",
+       BS_GROUPBOX, 8, 186, 436, 108, 0);
+    gTuner = mk(hwnd, L"STATIC", nullptr, SS_OWNERDRAW, 22, 204, 290, 24, IDC_TUNER);
+    gTunerNote = mk(hwnd, L"STATIC", L"--", SS_CENTER, 322, 206, 116, 22, 0);
+    slider(27, 22, 232, 130);   // Ref A: tuner calibration (425-455 Hz)
+    gTunerOn = mk(hwnd, L"BUTTON", L"Tuner On", BS_AUTOCHECKBOX,
+                  330, 232, 110, 22, IDC_TUNERON);
+    SendMessageW(gTunerOn, BM_SETCHECK, BST_CHECKED, 0);   // default: on
+    slider(28, 22, 262, 130);   // Shift Hz: pitch-shift target A
+    gPitchOn = mk(hwnd, L"BUTTON", L"Shift Pose", BS_AUTOCHECKBOX,
+                  330, 262, 110, 22, IDC_PITCHON);
+
+    // ---- DYNAMICS: noise gate + compressor (BEFORE the drives) -----------
+    mk(hwnd, L"BUTTON", L"DYNAMICS  (gate + compressor, before drives)",
+       BS_GROUPBOX, 8, 298, 436, 138, 0);
+    gGateOn = mk(hwnd, L"BUTTON", L"Noise Gate", BS_AUTOCHECKBOX,
+                 22, 314, 120, 20, IDC_GATEON);
+    SendMessageW(gGateOn, BM_SETCHECK, BST_CHECKED, 0);   // preset: on
+    gCompOn = mk(hwnd, L"BUTTON", L"Compressor", BS_AUTOCHECKBOX,
+                 250, 314, 130, 20, IDC_COMPON);
+    slider(19, 22, 340, 224);   // Gate threshold
+    slider(23, 22, 370, 224);   // Comp Sustain
+    slider(24, 22, 400, 224);   // Comp Level
+
+    // ---- PEDALBOARD: two stackable slots, A feeds B ----------------------
     mk(hwnd, L"BUTTON", L"PEDALBOARD  (A → B → amp)",
-       BS_GROUPBOX, 8, 186, 436, 262, 0);
+       BS_GROUPBOX, 8, 440, 436, 258, 0);
     auto pedalCombo = [&](int id, int x, int y) {
         HWND cb = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST,
                      x, y, 190, 160, id);
@@ -422,41 +474,49 @@ void buildUi(HWND hwnd) {
         return cb;
     };
     gOdOn = mk(hwnd, L"BUTTON", L"Slot A", BS_AUTOCHECKBOX,
-               22, 208, 70, 20, IDC_ODON);
+               22, 460, 70, 20, IDC_ODON);
     SendMessageW(gOdOn, BM_SETCHECK, BST_CHECKED, 0);   // preset: on
-    gPedalKind = pedalCombo(IDC_PEDAL, 100, 205);
+    gPedalKind = pedalCombo(IDC_PEDAL, 100, 457);
     SendMessageW(gPedalKind, CB_SETCURSEL, 3, 0);   // preset: TS-808 white-box
-    slider(0, 22, 232, 224);   // A Drive
-    slider(10, 22, 262, 224);  // A Tone
-    slider(1, 22, 292, 224);   // A Level
+    slider(0, 22, 484, 224);   // A Drive
+    slider(10, 22, 514, 224);  // A Tone
+    slider(1, 22, 544, 224);   // A Level
 
     gOdB = mk(hwnd, L"BUTTON", L"Slot B", BS_AUTOCHECKBOX,
-              22, 326, 70, 20, IDC_ODB);
+              22, 578, 70, 20, IDC_ODB);
     SendMessageW(gOdB, BM_SETCHECK, BST_CHECKED, 0);     // preset: on
-    gPedalKindB = pedalCombo(IDC_PEDALB, 100, 323);
+    gPedalKindB = pedalCombo(IDC_PEDALB, 100, 575);
     SendMessageW(gPedalKindB, CB_SETCURSEL, 1, 0);   // preset: SD-1 white-box
-    slider(11, 22, 350, 224);  // B Drive
-    slider(12, 22, 380, 224);  // B Tone
-    slider(13, 22, 410, 224);  // B Level
+    slider(11, 22, 602, 224);  // B Drive
+    slider(12, 22, 632, 224);  // B Tone
+    slider(13, 22, 662, 224);  // B Level
 
     // ---- AMPLIFIER section ----------------------------------------------
-    mk(hwnd, L"BUTTON", L"AMPLIFIER", BS_GROUPBOX, 8, 456, 436, 240, 0);
+    mk(hwnd, L"BUTTON", L"AMPLIFIER", BS_GROUPBOX, 8, 702, 436, 238, 0);
     gAmpKind = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST,
-                  22, 476, 250, 160, IDC_AMP);
+                  22, 722, 250, 160, IDC_AMP);
     for (auto* n : {L"Fender Princeton Reverb", L"Marshall Super Lead Plexi",
                     L"Mesa Dual Rectifier", L"Dumble Steel String Singer"})
         SendMessageW(gAmpKind, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(n));
     SendMessageW(gAmpKind, CB_SETCURSEL, 0, 0);
     for (int i = 2; i <= 7; ++i)
-        slider(i, 22, 504 + (i - 2) * 30, 224);
-    // factory-preset selector (top-right, free space)
+        slider(i, 22, 748 + (i - 2) * 30, 224);
+
+    // ---- MASTER VOLUME (chain tail) — big value + red highlight frame ----
+    mk(hwnd, L"BUTTON", L"MASTER VOLUME", BS_GROUPBOX, 8, 944, 436, 58, 0);
+    slider(9, 22, 966, 220);   // Master (label + big value enlarged below)
+    SendMessageW(gParamLbl[9], WM_SETFONT, reinterpret_cast<WPARAM>(gFontBig), TRUE);
+    MoveWindow(gParamLbl[9], 22, 966, 100, 28, TRUE);
+    MoveWindow(gVals[9], 356, 962, 80, 34, TRUE);
+    SendMessageW(gVals[9], WM_SETFONT, reinterpret_cast<WPARAM>(gFontBig), TRUE);
+    gMasterFrame = { 6, 942, 446, 1004 };   // red highlight box around the section
+
+    // ---- top-right: factory presets + Recto voicing + output meter -------
     mk(hwnd, L"STATIC", L"Preset:", SS_LEFT, 578, 12, 48, 16, 0);
     gPreset = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST, 626, 9, 250, 300, IDC_PRESET);
     for (const auto& pr : kPresets)
         SendMessageW(gPreset, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(pr.name));
     SendMessageW(gPreset, CB_SETCURSEL, 0, 0);
-    // Dual Rectifier voicing mode + rectifier (power-supply sag) — Recto amp only.
-    // Top-right, stacked under the Preset combo (free space above CE-2 CHORUS).
     mk(hwnd, L"STATIC", L"Recto Mode:", SS_LEFT, 578, 44, 74, 16, 0);
     gRectoMode = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST, 656, 41, 220, 120, IDC_RECTOMODE);
     for (auto* n : {L"Raw", L"Vintage", L"Modern"})
@@ -467,13 +527,22 @@ void buildUi(HWND hwnd) {
     for (auto* n : {L"Diode (tight)", L"Spongy (sag)"})
         SendMessageW(gRectifier, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(n));
     SendMessageW(gRectifier, CB_SETCURSEL, 0, 0);
-
-    // ---- LEVELS + noise gate --------------------------------------------
-    mk(hwnd, L"BUTTON", L"LEVELS  &  NOISE GATE", BS_GROUPBOX,
-       8, 704, 436, 128, 0);
-    slider(8, 22, 726, 224);   // Input Trim
-    slider(9, 22, 758, 224);   // Master
-    slider(19, 22, 794, 224);  // Noise Gate threshold
+    // output level meter: fills green, -> yellow near clip, -> red pinned at the top
+    mk(hwnd, L"STATIC", L"Output:", SS_LEFT, 578, 107, 74, 16, 0);
+    gMeter = mk(hwnd, L"STATIC", nullptr, SS_OWNERDRAW, 656, 104, 220, 18, IDC_METER);
+    // input trim (chain front) + digital capo (transpose), top-right.
+    // (Master lives in its own highlighted box at the bottom-left.)
+    slider(8, 578, 130, 130);   // Input Trim
+    mk(hwnd, L"STATIC", L"Capo:", SS_LEFT, 578, 164, 44, 18, 0);
+    gTranspose = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST,
+                    624, 160, 130, 340, IDC_TRANSPOSE);
+    for (int s = -12; s <= 12; ++s) {   // ±12 frets = ±1 octave
+        wchar_t e[24];
+        if (s == 0) swprintf(e, 24, L"0  (off)");
+        else swprintf(e, 24, L"%+d fret%s", s, (s == 1 || s == -1) ? L"" : L"s");
+        SendMessageW(gTranspose, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(e));
+    }
+    SendMessageW(gTranspose, CB_SETCURSEL, 12, 0);   // index 12 = 0 semitones (off)
 
     // ================= RIGHT COLUMN: FX chain ============================
     int rx = 456;
@@ -494,46 +563,47 @@ void buildUi(HWND hwnd) {
     slider(15, rx + 14, 394, 190);   // Feedback
     slider(16, rx + 14, 422, 190);   // Mix
 
-    mk(hwnd, L"BUTTON", L"DIGITAL REVERB  (after delay, stereo)",
-       BS_GROUPBOX, rx, 458, 436, 96, 0);
+    mk(hwnd, L"BUTTON", L"DIGITAL REVERB  (Freeverb, after delay)",
+       BS_GROUPBOX, rx, 458, 436, 100, 0);
+    gReverbOn = mk(hwnd, L"BUTTON", L"Engage", BS_AUTOCHECKBOX,
+                   rx + 14, 478, 120, 20, IDC_REVERBON);
+    slider(25, rx + 14, 502, 190);   // Decay
+    slider(26, rx + 14, 530, 190);   // R.Mix
+
+    mk(hwnd, L"BUTTON", L"STUDIO ROOM MIC  (stereo)",
+       BS_GROUPBOX, rx, 562, 436, 100, 0);
     gRoomOn = mk(hwnd, L"BUTTON", L"Engage", BS_AUTOCHECKBOX,
-                 rx + 300, 478, 120, 20, IDC_ROOMON);
-    SendMessageW(gRoomOn, BM_SETCHECK, BST_UNCHECKED, 0);  // preset: off
-    slider(17, rx + 14, 478, 190);   // reverb Decay
-    slider(18, rx + 14, 508, 190);   // reverb Mix
-    // ---- KEELEY COMPRESSOR (front of chain, before the drives) ----------
-    mk(hwnd, L"BUTTON", L"KEELEY COMPRESSOR  (front, before drives)",
-       BS_GROUPBOX, 8, 836, 436, 82, 0);
-    gCompOn = mk(hwnd, L"BUTTON", L"Engage", BS_AUTOCHECKBOX, 300, 858, 120, 20, IDC_COMPON);
-    slider(23, 22, 858, 224);   // Sustain
-    slider(24, 22, 886, 224);   // Comp Level
+                 rx + 14, 582, 120, 20, IDC_ROOMON);
+    SendMessageW(gRoomOn, BM_SETCHECK, BST_CHECKED, 0);    // preset: on
+    slider(17, rx + 14, 606, 190);   // Room amount
+    slider(18, rx + 14, 634, 190);   // Width
 
     // ---- 9-band GRAPHIC EQ (the reference pedal) -------------------------
     mk(hwnd, L"BUTTON", L"GRAPHIC EQ  (stereo, signal tail)",
-       BS_GROUPBOX, rx, 562, 436, 330, 0);
+       BS_GROUPBOX, rx, 666, 436, 330, 0);
     gEqOn = mk(hwnd, L"BUTTON", L"On", BS_AUTOCHECKBOX,
-               rx + 14, 582, 50, 20, IDC_EQON);
+               rx + 14, 686, 50, 20, IDC_EQON);
     SendMessageW(gEqOn, BM_SETCHECK, BST_CHECKED, 0);
     gHpfOn = mk(hwnd, L"BUTTON", L"HPF", BS_AUTOCHECKBOX,
-                rx + 300, 582, 56, 20, IDC_HPFON);
+                rx + 300, 686, 56, 20, IDC_HPFON);
     SendMessageW(gHpfOn, BM_SETCHECK, BST_CHECKED, 0);     // preset: on
     gLpfOn = mk(hwnd, L"BUTTON", L"LPF", BS_AUTOCHECKBOX,
-                rx + 366, 582, 56, 20, IDC_LPFON);
+                rx + 366, 686, 56, 20, IDC_LPFON);
     SendMessageW(gLpfOn, BM_SETCHECK, BST_CHECKED, 0);     // preset: on
     const wchar_t* efn[9] = {L"75", L"150", L"250", L"400", L"800",
                              L"1.5k", L"4.5k", L"8k", L"12k"};
     double eqDef[9] = {0, 2.6, 2.4, 0, 0, -2.2, 2.6, 4.3, -0.4};   // preset
     for (int b = 0; b < 9; ++b) {
         int x = rx + 20 + b * 46;
-        gEqVal[b] = mk(hwnd, L"STATIC", L"0.0", SS_CENTER, x - 6, 608, 44, 16,
+        gEqVal[b] = mk(hwnd, L"STATIC", L"0.0", SS_CENTER, x - 6, 712, 44, 16,
                        0);
         gEqFader[b] = mk(hwnd, TRACKBAR_CLASSW, nullptr,
-                         TBS_VERT | TBS_AUTOTICKS | TBS_BOTH, x, 628, 30, 218,
+                         TBS_VERT | TBS_AUTOTICKS | TBS_BOTH, x, 732, 30, 218,
                          IDC_EQ0 + b);
         SendMessageW(gEqFader[b], TBM_SETRANGE, TRUE, MAKELPARAM(0, 100));
         SendMessageW(gEqFader[b], TBM_SETPOS, TRUE,
                      50 - static_cast<int>(eqDef[b] * 50.0 / 12.0));
-        mk(hwnd, L"STATIC", efn[b], SS_CENTER, x - 6, 850, 44, 16, 0);
+        mk(hwnd, L"STATIC", efn[b], SS_CENTER, x - 6, 954, 44, 16, 0);
         wchar_t v[8];
         swprintf(v, 8, L"%+.1f", eqDef[b]);
         SetWindowTextW(gEqVal[b], v);
@@ -563,6 +633,19 @@ void applyPreset(int i) {
     applyControls();
 }
 
+// On amp switch, load that amp's default knob positions — each amp's knobs mean
+// different things (Recto Gain/Mid/Master/Drive vs Princeton Vol/Treble/Bass...),
+// so re-seat them to sensible values. kPresets index amp+1 (Princeton..Dumble).
+void loadAmpPreset(int amp) {
+    int pi = amp + 1, npr = static_cast<int>(sizeof(kPresets) / sizeof(kPresets[0]));
+    if (pi < 1 || pi >= npr) return;
+    const Preset& p = kPresets[pi];
+    setSlider(2, p.vol);  setSlider(3, p.treb); setSlider(4, p.bas); setSlider(5, p.rev);
+    setSlider(6, p.tspd); setSlider(7, p.tint); setSlider(9, p.mstr);
+    if (amp == 2) { SendMessageW(gRectoMode, CB_SETCURSEL, 2, 0);   // Recto -> Modern + Diode
+                    SendMessageW(gRectifier, CB_SETCURSEL, 0, 0); }
+}
+
 LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_CREATE:
@@ -570,8 +653,32 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             relabelAmp();
             applyControls();          // push the default preset to the engine
             SetTimer(hwnd, 1, 1000, nullptr);
+            SetTimer(hwnd, 2, 55, nullptr);   // fast output-meter refresh
             return 0;
         case WM_TIMER:
+            if (wp == 2) {   // fast output-meter + tuner refresh
+                gMeterLevel = (gRunning && gEngine) ? gEngine->outPeak.load() : 0.0f;
+                InvalidateRect(gMeter, nullptr, FALSE);
+                float hz = (gRunning && gEngine) ? gEngine->tunerHz.load() : 0.0f;
+                if (hz > 20.0f) {
+                    double refA = sliderValue(27);                 // user reference A
+                    double midi = 69.0 + 12.0 * std::log2(hz / refA);
+                    int n = static_cast<int>(std::lround(midi));
+                    double cents = (midi - n) * 100.0;
+                    static const wchar_t* nm[12] = {L"C", L"C#", L"D", L"D#", L"E", L"F",
+                                                    L"F#", L"G", L"G#", L"A", L"A#", L"B"};
+                    int ni = ((n % 12) + 12) % 12, oct = n / 12 - 1;
+                    gTunerCents = static_cast<float>(cents); gTunerActive = true;
+                    wchar_t t[48];
+                    swprintf(t, 48, L"%s%d  %+.0fc  %.0fHz", nm[ni], oct, cents, hz);
+                    SetWindowTextW(gTunerNote, t);
+                } else {
+                    gTunerActive = false; gTunerCents = 0.0f;
+                    SetWindowTextW(gTunerNote, L"--");
+                }
+                InvalidateRect(gTuner, nullptr, FALSE);
+                return 0;
+            }
             if (gRunning && gEngine) {
                 auto db = [](float v) {
                     return v > 1e-6f ? 20.0 * std::log10(v) : -99.0;
@@ -617,10 +724,15 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 case IDC_GATEON:      // were MISSING -> toggling Gate/Chorus/Room did
                 case IDC_CHORUSON:    // nothing until a slider drag fired applyControls
                 case IDC_ROOMON:
-                case IDC_COMPON: applyControls(); return 0;
+                case IDC_COMPON:
+                case IDC_REVERBON:
+                case IDC_PITCHON:
+                case IDC_TUNERON: applyControls(); return 0;
                 case IDC_AMP:
                     if (HIWORD(wp) == CBN_SELCHANGE) {
+                        int a = static_cast<int>(SendMessageW(gAmpKind, CB_GETCURSEL, 0, 0));
                         relabelAmp();
+                        loadAmpPreset(a);   // load that amp's default knobs (labels differ)
                         applyControls();
                     }
                     return 0;
@@ -636,6 +748,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     return 0;
                 case IDC_RECTOMODE:
                 case IDC_RECTIFIER:
+                case IDC_TRANSPOSE:
                     if (HIWORD(wp) == CBN_SELCHANGE) applyControls();
                     return 0;
                 case IDC_BACKEND:
@@ -643,6 +756,55 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     return 0;
             }
             return 0;
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hwnd, &ps);
+            if (gMasterFrame.right > gMasterFrame.left) {   // red highlight around Master
+                HBRUSH rb = CreateSolidBrush(RGB(220, 30, 30));
+                RECT f = gMasterFrame;
+                for (int k = 0; k < 3; ++k) { FrameRect(hdc, &f, rb); InflateRect(&f, -1, -1); }
+                DeleteObject(rb);
+            }
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_DRAWITEM: {
+            auto* d = reinterpret_cast<DRAWITEMSTRUCT*>(lp);
+            if (d->CtlID == IDC_METER) {
+                RECT r = d->rcItem;
+                FillRect(d->hDC, &r, reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+                float pk = gMeterLevel > 1.0f ? 1.0f : gMeterLevel;
+                RECT fill = r; fill.right = r.left + static_cast<int>((r.right - r.left) * pk);
+                COLORREF c = pk >= 0.98f ? RGB(225, 30, 30)
+                           : (pk >= 0.88f ? RGB(235, 190, 0) : RGB(35, 190, 70));
+                HBRUSH b = CreateSolidBrush(c);
+                FillRect(d->hDC, &fill, b); DeleteObject(b);
+                if (gMeterLevel >= 0.995f) {   // clip: red block pinned at the top
+                    RECT cap = r; cap.left = r.right - 10;
+                    HBRUSH rb = CreateSolidBrush(RGB(255, 0, 0));
+                    FillRect(d->hDC, &cap, rb); DeleteObject(rb);
+                }
+            } else if (d->CtlID == IDC_TUNER) {   // tuner: flat <- center -> sharp needle
+                RECT r = d->rcItem;
+                FillRect(d->hDC, &r, reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+                int w = r.right - r.left, cx = r.left + w / 2;
+                RECT ctr = { cx - 2, r.top, cx + 2, r.bottom };   // in-tune center line
+                HBRUSH cbz = CreateSolidBrush(RGB(90, 90, 90));
+                FillRect(d->hDC, &ctr, cbz); DeleteObject(cbz);
+                if (gTunerActive) {
+                    double frac = gTunerCents / 50.0;             // ±50c = full scale
+                    if (frac > 1.0) frac = 1.0; if (frac < -1.0) frac = -1.0;
+                    int nx = cx + static_cast<int>(frac * (w / 2 - 6));
+                    float ac = gTunerCents < 0 ? -gTunerCents : gTunerCents;
+                    COLORREF c = ac <= 5.0f ? RGB(40, 210, 80)
+                               : (ac <= 15.0f ? RGB(235, 190, 0) : RGB(225, 60, 40));
+                    RECT nd = { nx - 4, r.top + 2, nx + 4, r.bottom - 2 };
+                    HBRUSH nb = CreateSolidBrush(c);
+                    FillRect(d->hDC, &nd, nb); DeleteObject(nb);
+                }
+            }
+            return TRUE;
+        }
         case WM_DESTROY:
             if (gRunning) {
                 if (gUsingAsio) gAsio.stop();
@@ -660,6 +822,28 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nShow) {
     INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_BAR_CLASSES};
     InitCommonControlsEx(&icc);
 
+    // Keep full CPU clock when minimized / in the background. On Windows 11 the
+    // OS applies "EcoQoS" power throttling to windows that lose the foreground,
+    // parking the process on efficiency cores at a lower clock -> the audio
+    // callback misses its deadline -> dropouts/crackle. Opt out of execution-
+    // speed throttling and nudge the priority class up so audio stays glitch-free
+    // whether the window is on top or minimized. (Looked up dynamically so it
+    // still links on older toolchains that lack SetProcessInformation.)
+    {
+        typedef struct { ULONG Version, ControlMask, StateMask; } PwrThrottle;
+        typedef BOOL(WINAPI * SetProcInfo)(HANDLE, int, LPVOID, DWORD);
+        auto spi = reinterpret_cast<SetProcInfo>(GetProcAddress(
+            GetModuleHandleW(L"kernel32.dll"), "SetProcessInformation"));
+        if (spi) {
+            PwrThrottle pt{};
+            pt.Version = 1;         // PROCESS_POWER_THROTTLING_CURRENT_VERSION
+            pt.ControlMask = 0x1;   // PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+            pt.StateMask = 0;       // 0 = throttling OFF (always run full speed)
+            spi(GetCurrentProcess(), 4 /*ProcessPowerThrottling*/, &pt, sizeof(pt));
+        }
+        SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
+    }
+
     if (ma_context_init(nullptr, 0, nullptr, &gCtx) != MA_SUCCESS) return 1;
     ma_context_get_devices(&gCtx, &gPlayback, &gNPlayback, &gCapture,
                            &gNCapture);
@@ -675,7 +859,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nShow) {
     wc.lpszClassName = L"VibeSTPracticeAmp";
     RegisterClassW(&wc);
 
-    RECT r{0, 0, 908, 940};
+    RECT r{0, 0, 908, 1006};
     AdjustWindowRect(&r, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU
                      | WS_MINIMIZEBOX, FALSE);
     HWND hwnd = CreateWindowExW(

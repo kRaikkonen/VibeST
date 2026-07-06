@@ -5,6 +5,7 @@
 #pragma once
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <vector>
 #include "dsp.hpp"      // dsp::Biquad
@@ -247,7 +248,7 @@ public:
     void setDecay(double d) { fb_ = 0.70 + 0.288 * std::clamp(d, 0.0, 1.0); }  // room size
     void setMix(double m) { mix_ = std::clamp(m, 0.0, 1.0); }
     void process(double x, double& outL, double& outR) {
-        double in = x * 0.015;
+        double in = x * 0.045;                 // input gain (audible wet at mix ~0.3)
         double wl = 0.0, wr = 0.0;
         for (int i = 0; i < 8; ++i) { wl += comb(cL_[i], ciL_[i], dL_[i], in);
                                       wr += comb(cR_[i], ciR_[i], dR_[i], in); }
@@ -273,6 +274,99 @@ private:
     std::vector<double> cL_[8], cR_[8], aL_[4], aR_[4];
     size_t ciL_[8]{}, ciR_[8]{}, aiL_[4]{}, aiR_[4]{};
     double dL_[8]{}, dR_[8]{}, fb_ = 0.84, mix_ = 0.3, damp_ = 0.3;
+};
+
+// ---- chromatic tuner: decimating autocorrelation pitch detector ------------
+// Taps the input (parallel, does not alter the audio). Decimates to ~6kHz
+// (guitar fundamentals are <1.4kHz) then runs a normalized autocorrelation
+// (NSDF) to find the period; parabolic interpolation gives sub-sample accuracy
+// so cents are meaningful. The GUI turns the raw Hz into note + cents using the
+// user's reference A (which is display-only; it doesn't touch the signal).
+class Tuner {
+public:
+    void init(double fs) {
+        decim_ = std::max(1, (int)std::lround(fs / 6000.0));   // -> ~6 kHz internal
+        dfs_ = fs / decim_;
+        buf_.assign(N, 0.0f); lin_.assign(N, 0.0f); nsdf_.assign(N, 0.0);
+        w_ = 0; dcnt_ = 0; hop_ = 0; acc_ = 0.0f; freq_.store(0.0f);
+    }
+    void process(float x) {                         // one input sample
+        acc_ += x;                                  // box-average anti-alias
+        if (++dcnt_ >= decim_) {
+            buf_[w_] = acc_ / decim_; acc_ = 0.0f; dcnt_ = 0;
+            w_ = (w_ + 1) % N;
+            if (++hop_ >= HOP) { hop_ = 0; detect(); }
+        }
+    }
+    float freq() const { return freq_.load(std::memory_order_relaxed); }
+private:
+    void detect() {
+        double e0 = 0.0;
+        for (int i = 0; i < N; ++i) { lin_[i] = buf_[(w_ + i) % N]; e0 += (double)lin_[i] * lin_[i]; }
+        if (std::sqrt(e0 / N) < 3e-3) { freq_.store(0.0f); return; }   // too quiet -> no note
+        int minLag = std::max(2, (int)(dfs_ / 1400.0));
+        int maxLag = std::min(N - 1, (int)(dfs_ / 60.0));
+        double best = 0.0; int bestLag = 0;
+        for (int lag = minLag; lag <= maxLag; ++lag) {
+            double ac = 0.0, e = 0.0;
+            for (int i = 0; i < N - lag; ++i) { ac += (double)lin_[i] * lin_[i + lag]; e += (double)lin_[i + lag] * lin_[i + lag]; }
+            double nsdf = 2.0 * ac / (e0 + e + 1e-12);   // -1..1, 1 = perfect period
+            nsdf_[lag] = nsdf;
+            if (nsdf > best) { best = nsdf; bestLag = lag; }
+        }
+        if (bestLag < minLag + 1 || bestLag > maxLag - 1 || best < 0.4) { freq_.store(0.0f); return; }
+        double a = nsdf_[bestLag - 1], b = nsdf_[bestLag], c = nsdf_[bestLag + 1];   // parabolic interp
+        double den = a - 2.0 * b + c;
+        double delta = std::fabs(den) > 1e-12 ? 0.5 * (a - c) / den : 0.0;
+        if (delta < -1.0 || delta > 1.0) delta = 0.0;
+        freq_.store((float)(dfs_ / (bestLag + delta)));
+    }
+    static constexpr int N = 1024, HOP = 512;
+    int decim_ = 8, w_ = 0, dcnt_ = 0, hop_ = 0;
+    double dfs_ = 6000.0;
+    float acc_ = 0.0f;
+    std::vector<float> buf_, lin_;
+    std::vector<double> nsdf_;
+    std::atomic<float> freq_{0.0f};
+};
+
+// ---- "shift pose" pitch shifter: 2-tap crossfaded delay line ----------------
+// Classic H910/granular real-time shifter. Two read taps 180deg apart sweep the
+// delay at rate (ratio-1); each is windowed by sin^2 so as one tap approaches a
+// wrap discontinuity the other (mid-window) takes over -- the two windows are
+// complementary (sin^2 + cos^2 = 1), so no amplitude ripple. Good for the small
+// shifts we need (440->451Hz = ~1.04 semitone), low latency, no FFT.
+class PitchShift {
+public:
+    void init(double fs) {
+        fs_ = fs; win_ = std::max(64, (int)(fs * 0.045));   // ~45 ms grain
+        buf_.assign((size_t)win_ * 2 + 4, 0.0f); w_ = 0; ph_ = 0.0; ratio_ = 1.0;
+    }
+    void setRatio(double r) { ratio_ = std::min(std::max(r, 0.45), 2.2); }  // out/in pitch (±1 oct + fine)
+    double process(double x) {
+        int n = (int)buf_.size();
+        buf_[w_] = (float)x;
+        ph_ += (1.0 - ratio_);                       // delay sweep: ratio>1 -> delay shrinks -> pitch up
+        while (ph_ >= win_) ph_ -= win_;
+        while (ph_ < 0.0)   ph_ += win_;
+        double d1 = ph_;
+        double d2 = ph_ + win_ * 0.5; if (d2 >= win_) d2 -= win_;
+        double s1 = std::sin(kPi * d1 / win_), g1 = s1 * s1;   // sin^2 window
+        double s2 = std::sin(kPi * d2 / win_), g2 = s2 * s2;   // = cos^2 -> g1+g2=1
+        double y = g1 * read(w_ - d1, n) + g2 * read(w_ - d2, n);
+        w_ = (w_ + 1) % n;
+        return y;
+    }
+private:
+    double read(double pos, int n) const {
+        while (pos < 0.0) pos += n;
+        int i = (int)pos; double f = pos - i;
+        int j = (i + 1) % n; i %= n;
+        return buf_[i] * (1.0 - f) + buf_[j] * f;
+    }
+    double fs_ = 48000.0, ratio_ = 1.0, ph_ = 0.0;
+    int win_ = 2160, w_ = 0;
+    std::vector<float> buf_;
 };
 
 // ---- 9-band graphic EQ + HPF/LPF (the pedal in the reference image) ---------
