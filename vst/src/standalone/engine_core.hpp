@@ -23,6 +23,8 @@
 #include "../engine/pedals.hpp"
 #include "../engine/princeton.hpp"
 #include "../engine/plexi.hpp"
+#include "../engine/rectifier.hpp"
+#include "../engine/dumble.hpp"
 #include "../engine/dsp.hpp"
 #include "../engine/fx.hpp"
 
@@ -42,7 +44,8 @@ struct Controls {
     int aKind = 0, bKind = 3;       // 0 OD-1, 1 SD-1, 2 TS-808, 3 Mad Red
     double aDrive = 0.6, aTone = 0.5, aLevel = 0.35;
     double bDrive = 0.5, bTone = 0.5, bLevel = 0.35;
-    int ampKind = 0;                // 0 Princeton Reverb, 1 Marshall Plexi
+    int ampKind = 0;                // 0 Princeton Reverb, 1 Marshall Plexi, 2 Dual Rectifier
+    int rectoMode = 2, rectType = 0;// Recto: mode 0 Raw/1 Vintage/2 Modern; rect 0 Diode/1 Spongy
     int cabKind = 2;                // 0 C10R 1x10, 1 Greenback 2x12, 2 GB 4x12
     // CE-2 chorus (after amp, before delay)
     bool chorusOn = false;
@@ -51,7 +54,9 @@ struct Controls {
     bool delayOn = true;
     double delayMs = 402, delayFb = 0.351, delayMix = 0.6;   // E.Level
     bool roomOn = true;
-    double roomAmount = 0.25, roomWidth = 0.8;
+    double roomAmount = 0.5, roomWidth = 0.3;      // now: reverb Decay + Mix
+    bool compOn = false;                           // Keeley compressor (front of chain)
+    double compSustain = 0.5, compLevel = 0.6;
     bool eqOn = true;
     double eqDb[9] = {0, 2.6, 2.4, 0, 0, -2.2, 2.6, 4.3, -0.4};  // preset
     bool eqHpfOn = true, eqLpfOn = true;
@@ -151,6 +156,8 @@ struct Engine {
           fxA(pedals::Kind::SD1, 192000.0, 0.6, 0.35, 0.5, 2, true),   // whitebox tone
           fxB(pedals::Kind::TS808, 192000.0, 0.5, 0.35, 0.5, 2, true), // whitebox tone
           plexiAmp(eco_ ? 48000.0 : 96000.0, 0.6, 0.6, 0.4, 0.5, 1.0),
+          rectiAmp(eco_ ? 48000.0 : 96000.0, 0.5, 0.4, 0.9, 0.3, 0.7),
+          dumbleAmp(eco_ ? 48000.0 : 96000.0, 0.3, 0.75, 0.9, 0.1, 0.7),
           amp(eco_ ? 48000.0 : 96000.0, princeton::AmpControls{},
               makeTank()) {
         if (!tankIr.empty()) conv.init(tankIr, ampChunk);
@@ -173,7 +180,8 @@ struct Engine {
         gate_.init(48000.0);
         chorus_.init(48000.0);
         delay_.init(48000.0);
-        roomMic_.init(48000.0);
+        reverb_.init(48000.0);
+        comp_.init(48000.0);
         eq_.init(48000.0);
         apply(Controls{});
     }
@@ -198,11 +206,14 @@ struct Engine {
 
     void applySlot(od1::Pedal& od, pedals::Pedal& fx, int kind, int oldKind,
                    double drive, double tone, double level) {
+        // 0 OD-1|1 SD-1 wb|2 SD-1 hy|3 TS wb|4 TS hy|5 MadRed|6 Klon|7 Bluesbreaker
         static const pedals::Kind kinds[] = {
-            pedals::Kind::OD1, pedals::Kind::SD1,
-            pedals::Kind::TS808, pedals::Kind::MadRed};
+            pedals::Kind::OD1, pedals::Kind::SD1, pedals::Kind::SD1,
+            pedals::Kind::TS808, pedals::Kind::TS808, pedals::Kind::MadRed,
+            pedals::Kind::Klon, pedals::Kind::BlueBreaker};
+        static const bool wbox[] = {true, true, false, true, false, true, true, true};
         if (kind != oldKind && kind != 0)
-            fx = pedals::Pedal(kinds[kind], 192000.0, drive, level, tone, 2, true);  // whitebox
+            fx = pedals::Pedal(kinds[kind], 192000.0, drive, level, tone, 2, wbox[kind]);
         if (kind == 0) {
             od.setDrive(drive);
             od.setLevel(level);
@@ -225,6 +236,18 @@ struct Engine {
         plexiAmp.setTone(c.treble, c.bass, c.reverb);
         plexiAmp.setPresence(c.tremSpeed);
         plexiAmp.setBright(c.tremIntensity);
+        // Dual Rectifier control map: Volume->Gain, Treble/Bass direct, Reverb->Mid
+        // (Marshall stack has a mid pot), TremSpeed->Master.
+        rectiAmp.setGain(c.volume);
+        rectiAmp.setTone(c.treble, c.reverb, c.bass, 0.5 + 0.5 * c.tremSpeed);
+        rectiAmp.setInScale(0.5 + 4.0 * c.tremIntensity);   // TremIntensity -> input Drive
+        rectiAmp.setMode(c.rectoMode);                      // Raw / Vintage / Modern
+        rectiAmp.setRectifier(c.rectType);                  // Diode / Spongy (sag)
+        // Dumble SSS control map: Volume->Drive/push, Treble/Bass direct, Reverb->Mid,
+        // TremSpeed->Volume, TremIntensity->Input.
+        dumbleAmp.setDrive(c.volume);
+        dumbleAmp.setTone(c.treble, c.reverb, c.bass, 0.5 + 0.5 * c.tremSpeed);
+        dumbleAmp.setInScale(0.5 + 1.5 * c.tremIntensity);
         if (c.cabKind != ctl.cabKind) rebuildCab(c.cabKind);
         // gate + chorus + post-amp FX
         gate_.setThreshold(c.gateThresh);
@@ -234,8 +257,10 @@ struct Engine {
         delay_.setTimeMs(c.delayMs);
         delay_.setFeedback(c.delayFb);
         delay_.setLevel(c.delayMix);   // delayMix is now the Boss E.Level
-        roomMic_.setAmount(c.roomAmount);
-        roomMic_.setWidth(c.roomWidth);
+        reverb_.setDecay(c.roomAmount);   // "Decay" slider (was Room amount)
+        reverb_.setMix(c.roomWidth);      // "Mix" slider (was Width)
+        comp_.setSustain(c.compSustain);
+        comp_.setLevel(c.compLevel);
         for (int b = 0; b < 9; ++b) eq_.setGainDb(b, c.eqDb[b]);
         eq_.setHpf(c.eqHpfOn, c.eqHpfHz);
         eq_.setLpf(c.eqLpfOn, c.eqLpfHz);
@@ -287,6 +312,7 @@ struct Engine {
         for (int i = 0; i < kChunk48; ++i) {
             double g = static_cast<double>(in[i]);
             if (ctl.gateOn) g = gate_.process(g);   // noise gate at the front
+            if (ctl.compOn) g = comp_.process(g);   // Keeley compressor before the drives
             x48[i] = g * ctl.inTrim;
         }
 
@@ -324,6 +350,10 @@ struct Engine {
         double* ampOut = (ampN == kChunk48) ? y48 : y96;
         if (ctl.ampKind == 0)
             amp.processBlock(ampIn, ampOut, ampN, b1, b2, b3);
+        else if (ctl.ampKind == 2)
+            rectiAmp.processBlock(ampIn, ampOut, ampN);
+        else if (ctl.ampKind == 3)
+            dumbleAmp.processBlock(ampIn, ampOut, ampN);
         else
             plexiAmp.processBlock(ampIn, ampOut, ampN);
         if (ampN == kChunk96) ampDn.process(y96, y48, kChunk48);
@@ -370,7 +400,7 @@ struct Engine {
         float opk = outPeak.load() * 0.95f;
         for (int i = 0; i < kChunk48; ++i) {
             double L, R;
-            if (ctl.roomOn) roomMic_.process(y48[i], L, R);
+            if (ctl.roomOn) reverb_.process(y48[i], L, R);   // digital reverb after delay
             else { L = y48[i]; R = y48[i]; }
             if (ctl.eqOn) { L = eq_.step(0, L); R = eq_.step(1, R); }
             L = ceil(L * ctl.master);
@@ -388,6 +418,8 @@ struct Engine {
     pedals::Pedal fxA, fxB;        // SD-1 / TS-808 / Mad Red per slot
     princeton::Amp amp;
     plexi::Amp plexiAmp;           // Marshall Super Lead Plexi
+    recti::Rectifier rectiAmp;     // Mesa Dual Rectifier (Rhythm/Orange)
+    dumble::Dumble dumbleAmp;      // Dumble Steel String Singer (clean)
     dsp::PartConv conv, cabConv;
     bool tankBypass = false;
     bool useCabIr = false;
@@ -402,7 +434,8 @@ struct Engine {
     fx::NoiseGate gate_;               // front of chain
     fx::CE2Chorus chorus_;             // after amp, before delay
     fx::BossDelay delay_;              // between amp and cab
-    fx::RoomMic roomMic_;              // stereo studio room mic (tail)
+    fx::Reverb reverb_;                // digital reverb (Freeverb, after delay)
+    fx::Compressor comp_;              // Keeley-style compressor (front, before drives)
     fx::GraphicEQ eq_;                 // 9-band graphic EQ (very tail)
     Controls ctl;
     std::mutex mtx;

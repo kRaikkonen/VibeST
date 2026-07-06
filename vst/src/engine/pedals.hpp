@@ -123,9 +123,52 @@ private:
     double b0_, a1_, x1_ = 0, lp1_ = 0, tone_ = 0.5;
 };
 
+// ---- Klon Centaur: transparent germanium-feedback overdrive ------------------
+// Schematic-first (Aion/ElectroSmash, 铁律一): IC1B non-inverting gain
+// A = 1 + 422k/lower, lower = 15k+2k+(1-drive)*100k -> A 4.6..25.8x. Two 1N34A Ge
+// diodes anti-parallel across the feedback clip only the EXCESS (A-1)*vin toward the
+// ~0.35V germanium knee; vin passes straight through -> transparent. Active tilt Treble.
+class KlonStage {
+public:
+    explicit KlonStage(double fs = 48000.0) : fs_(fs) { setGain(0.5); setTreble(0.5); }
+    void setGain(double g) {
+        g = std::clamp(g, 0.0, 0.999);
+        lower_ = 15e3 + 2e3 + (1.0 - g) * 100e3;         // R11+R10+GAIN(100k) feedback lower leg
+    }
+    void setTreble(double t) {
+        double wc = 2.0 * kPi * 1600.0, k = 2.0 * fs_;   // tilt pivot ~1.6 kHz
+        b0_ = wc / (k + wc); a1_ = (wc - k) / (k + wc);
+        tilt_ = (t - 0.5) * 2.0;                          // -1 dark .. +1 bright
+    }
+    // IC1B non-inverting stage, TWO 1N34A germanium diodes anti-parallel across R12.
+    // Op-amp holds v- = vin; KCL at v-: vd/R12 + 2*Is*sinh(vd/nVT) = vin/lower, vd = vo-vin.
+    // Newton for vd; vo = vin + vd -> clean vin passes through (transparent) + soft Ge clip.
+    double step(double x) {
+        double vin = x * 0.6;
+        double drive = vin / lower_;
+        double vd = vd_;
+        for (int k = 0; k < 40; ++k) {
+            double a = std::clamp(vd / NVT, -60.0, 60.0);
+            double id = IS * (std::exp(a) - std::exp(-a));       // 2*Is*sinh (anti-parallel Ge)
+            double dv = (vd / R12 + id - drive)
+                        / (1.0 / R12 + IS * (std::exp(a) + std::exp(-a)) / NVT);
+            vd -= dv;
+            if (std::fabs(dv) < 1e-11) break;
+        }
+        vd_ = vd;
+        double vo = vin + vd;
+        double lp = b0_ * (vo + x1_) - a1_ * y1_;
+        x1_ = vo; y1_ = lp;
+        return lp + (1.0 + tilt_) * (vo - lp);            // active tilt treble
+    }
+private:
+    static constexpr double R12 = 422e3, IS = 2e-6, NVT = 1.3 * 0.02585;   // 1N34A
+    double fs_, lower_ = 57e3, tilt_ = 0.0, b0_ = 1.0, a1_ = 0.0, x1_ = 0.0, y1_ = 0.0, vd_ = 0.0;
+};
+
 // ---- pedal presets -----------------------------------------------------------
 
-enum class Kind { OD1, SD1, TS808, MadRed };
+enum class Kind { OD1, SD1, TS808, MadRed, Klon, BlueBreaker };
 
 inline DriveParams driveParamsFor(Kind k) {
     // 1N4148: Is=2.52nA N=1.752; red LED approx: Is~1e-16, N~1.9 (Vf~1.7V)
@@ -137,9 +180,21 @@ inline DriveParams driveParamsFor(Kind k) {
         case Kind::OD1:
             return {4.7e-9, 100e3, 33e3, 1e6, 4.7e3, 47e-9,
                     100e-12, 2.52e-9, 1.752, 0.02585, 2, 1};
-        case Kind::MadRed:                         // LED symmetric, high gain
+        case Kind::MadRed:  // Mad Professor "Red" = BJFE Dyna Red Distortion (schematic-verified):
+            // 2x red LED (Vf ~1.8V, corrected from 1.7) in the feedback loop; DIST 500k pot,
+            // gain leg 3k. SIMPLIFIED: the real 2nd-stage 1N4001 shunt-to-gnd clipper + the
+            // CA3130/2N5458-JFET topology are collapsed into this framework. Not NAM-validated.
             return {10e-9, 47e3, 1e3, 500e3, 3e3, 1e-6,
-                    100e-12, 1e-16, 1.9, 0.02585, 1, 1};
+                    100e-12, 1e-18, 2.0, 0.02585, 1, 1};
+        case Kind::BlueBreaker:  // Marshall Bluesbreaker — REAL values (AionFX Cerulean stock):
+            // input C1 10n / R1 1M pulldown; gain leg R2 3k3 + C3 10n; feedback R3 4k7 +
+            // Drive 100kB; C2 47pF fb cap; clip = 4x 1N914 (2-in-series each way = symmetric
+            // soft, ~1.2V knee). Schematic-real; NOT NAM-validated (no Bluesbreaker capture).
+            return {10e-9, 1e6, 4.7e3, 100e3, 3.3e3, 10e-9,
+                    47e-12, 2.52e-9, 1.752, 0.02585, 2, 2};
+        case Kind::Klon:                           // unused (Klon uses KlonStage); valid dummy
+            return {10e-9, 51e3, 51e3, 500e3, 4.7e3, 51e-9,
+                    51e-12, 2.52e-9, 1.752, 0.02585, 1, 1};
     }
     return {};
 }
@@ -152,40 +207,72 @@ public:
     Pedal(Kind kind, double fs, double drive = 0.5, double level = 0.7,
           double tone = 0.5, int driveOS = 2, bool whitebox = false)
         : kind_(kind), drive_(driveParamsFor(kind), fs, drive, driveOS),
-          tilt_(kind == Kind::MadRed ? 1500.0 : 723.0, fs),
+          tilt_(kind == Kind::MadRed ? 1500.0 : 723.0, fs), klon_(fs),
           hpOut_(100e3, 1e-6, fs), level_(level), fs_(fs), whitebox_(whitebox) {
         tilt_.set(tone);
         // OD-1 has a fixed 884 Hz filter instead of a tone knob
         od1Filt_ = (kind == Kind::OD1);
-        if (whitebox_) buildTone(tone);
+        if (kind_ == Kind::Klon) { klon_.setGain(drive); klon_.setTreble(tone); }
+        else if (whitebox_) buildTone(tone);
+        double wc = 2.0 * kPi * 14000.0, kk = 2.0 * fs;    // output-coupling top rolloff
+        cpB_ = wc / (kk + wc); cpA_ = (wc - kk) / (kk + wc);
     }
-    void setDrive(double d) { drive_.setDrive(d); }
+    void setDrive(double d) {
+        if (kind_ == Kind::Klon) klon_.setGain(d); else drive_.setDrive(d);
+    }
     void setLevel(double l) { level_ = l; }
     void setTone(double t) {
-        if (whitebox_) { if (t != lastTone_) { buildTone(t); lastTone_ = t; } }
+        if (kind_ == Kind::Klon) klon_.setTreble(t);
+        else if (whitebox_) { if (t != lastTone_) { buildTone(t); lastTone_ = t; } }
         else tilt_.set(t);
     }
 
+    // output-impedance coupling: the level-pot output Z + cable / amp-input capacitance
+    // softens the very top going into the amp — the "series coupling" black-box models
+    // miss (they model pedal and amp separately). Gentle ~14 kHz one-pole.
+    double coupled(double o) { cpY1_ = cpB_ * (o + cpX1_) - cpA_ * cpY1_; cpX1_ = o; return cpY1_; }
     double step(double x) {
+        if (kind_ == Kind::Klon) return coupled(hpOut_.step(klon_.step(x) * level_));
         double y = drive_.step(x);
+        if (kind_ == Kind::MadRed) y = shuntClip(y);        // Dyna Red 2nd-stage 1N4001 shunt
         y = whitebox_ ? toneNet_.step(y) : tilt_.step(y);   // WB: real MNA tone
         y *= level_;
-        return hpOut_.step(y);
+        return coupled(hpOut_.step(y));
     }
 
 private:
     void buildTone(double t) {
         if (kind_ == Kind::SD1 || kind_ == Kind::OD1)
             toneNet_ = pedal::sd1_tone(fs_, t);
-        else                                    // TS808 / MadRed -> TS tone
+        else if (kind_ == Kind::BlueBreaker)
+            toneNet_ = pedal::bb_tone(fs_, t);          // white-box passive treble-cut
+        else if (kind_ == Kind::MadRed)
+            toneNet_ = pedal::dynared_tone(fs_, t);     // white-box Dyna Red "Treble"
+        else                                            // TS808 -> TS tone
             toneNet_ = pedal::ts808_tone(fs_, t);
+    }
+    // Dyna Red 2nd clip stage: 2x 1N4001 anti-parallel to ground after ~1k series.
+    // Solve (vout - v)/Rs = 2*Is*sinh(v/nVT) -> soft silicon shunt clip (~0.6V).
+    static double shuntClip(double vout) {
+        const double Rs = 1e3, Is = 1.4e-8, nvt = 1.8 * 0.02585;
+        double v = vout;
+        for (int k = 0; k < 25; ++k) {
+            double a = std::clamp(v / nvt, -60.0, 60.0);
+            double id = Is * (std::exp(a) - std::exp(-a));
+            double dv = ((vout - v) / Rs - id) / (-1.0 / Rs - Is * (std::exp(a) + std::exp(-a)) / nvt);
+            v -= dv;
+            if (std::fabs(dv) < 1e-10) break;
+        }
+        return v;
     }
     Kind kind_;
     OpampDrive drive_;
     Tilt tilt_;                    // HYBRID crossfade tone (marked; kept for A-B)
+    KlonStage klon_;               // Klon Centaur (Ge-feedback transparent overdrive)
     pedal::MnaTone toneNet_;       // PURE WHITE-BOX tone (op-amp active RC, MNA)
     od1::OnePoleHP hpOut_;
     double level_, fs_, lastTone_ = -1.0;    // guard: rebuild MnaTone only on change
+    double cpB_ = 1.0, cpA_ = 0.0, cpX1_ = 0.0, cpY1_ = 0.0;  // output-coupling LP
     bool od1Filt_ = false, whitebox_ = false;
 };
 

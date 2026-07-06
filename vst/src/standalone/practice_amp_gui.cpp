@@ -22,6 +22,8 @@ constexpr int IDC_IN = 100, IDC_OUT = 101, IDC_EXCL = 102, IDC_START = 103,
               IDC_ODB = 114, IDC_CABKIND = 115, IDC_DELAYON = 116,
               IDC_EQON = 117, IDC_HPFON = 118, IDC_LPFON = 119,
               IDC_GATEON = 120, IDC_CHORUSON = 121, IDC_ROOMON = 122,
+              IDC_PRESET = 130, IDC_RECTOMODE = 131, IDC_RECTIFIER = 132,
+              IDC_COMPON = 133,
               IDC_EQ0 = 200;              // 200..208 = 9 EQ faders
 constexpr int IDC_SLIDER0 = 120;   // 10 sliders: 120..129
 constexpr int IDC_VAL0 = 140;      // value labels: 140..149
@@ -30,7 +32,7 @@ struct Param {
     const wchar_t* name;
     double lo, hi, def;
 };
-const Param kParams[23] = {
+const Param kParams[25] = {
     {L"Drive", 0, 1, 0.6},        {L"Level", 0, 1, 0.35},
     {L"Volume", 0, 1, 0.83},      {L"Treble", 0, 1, 0.63},
     {L"Bass", 0, 1, 0.43},        {L"Reverb", 0, 1, 0.15},
@@ -43,19 +45,43 @@ const Param kParams[23] = {
     {L"Time ms", 20, 1000, 402},  // 14: delay time
     {L"Feedbk", 0, 0.9, 0.351},   // 15: delay feedback
     {L"E.Level", 0, 1.5, 0.6},    // 16: delay repeat level (Boss E.Level)
-    {L"Room", 0, 1, 0.25},        // 17: room mic amount
-    {L"Width", 0, 1, 0.8},        // 18: room mic width
+    {L"Decay", 0, 1, 0.5},        // 17: reverb decay / room size
+    {L"Mix", 0, 1, 0.3},          // 18: reverb mix
     {L"Threshold", 0, 1, 0.25},   // 19: noise gate threshold
     {L"Rate", 0, 1, 0.4},         // 20: chorus rate
     {L"Depth", 0, 1, 0.55},       // 21: chorus depth
     {L"Mix", 0, 1, 1.0},          // 22: chorus mix
+    {L"Sustain", 0, 1, 0.5},      // 23: compressor sustain
+    {L"Comp Lvl", 0, 1, 0.6},     // 24: compressor level
 };
-constexpr int NP = 23;
+constexpr int NP = 25;
 // amp-dependent labels for sliders 2..7
-const wchar_t* kAmpLabels[2][6] = {
+const wchar_t* kAmpLabels[4][6] = {
     {L"Volume", L"Treble", L"Bass", L"Reverb", L"Trem Speed",
      L"Trem Intensity"},
     {L"Gain", L"Treble", L"Bass", L"Middle", L"Presence", L"High Treble"},
+    // Dual Rectifier — matches the engine's control map (Vol->Gain, Reverb->Mid,
+    // TremSpeed->Master, TremIntensity->Drive/input-push). Was falling back to
+    // Princeton's labels because relabelAmp clamped the amp index to 0..1.
+    {L"Gain", L"Treble", L"Bass", L"Mid", L"Master", L"Drive"},
+    // Dumble SSS (clean): Vol->Drive/push, Reverb->Mid, TremSpeed->Volume, TremInt->Input
+    {L"Drive", L"Treble", L"Bass", L"Mid", L"Volume", L"Input"},
+};
+
+// ---- factory presets: set amp + pedals + knobs (raw slider positions; each amp
+// reinterprets them per its control map) then push to the engine. ----------------
+struct Preset {
+    const wchar_t* name; int amp, pa, pb; bool aOn, bOn;
+    double vol, treb, bas, rev, tspd, tint, mstr, ad, at, al, bd, bt, bl;
+};
+const Preset kPresets[] = {
+    {L"— Presets —",     0,3,1,true, true,  0.5,0.5,0.5,0.3,0.5,0.0,0.5, 0.5,0.5,0.5,0.5,0.5,0.5},
+    {L"Princeton Clean", 0,0,0,false,false, 0.4,0.6,0.5,0.3,0.0,0.0,0.6, 0.5,0.5,0.5,0.5,0.5,0.5},
+    {L"Plexi Crunch",    1,0,0,false,false, 0.7,0.6,0.4,0.6,0.5,0.5,0.6, 0.5,0.5,0.5,0.5,0.5,0.5},
+    {L"Recto Metal",     2,0,0,false,false, 0.8,0.4,0.4,0.9,0.4,0.3,0.5, 0.5,0.5,0.5,0.5,0.5,0.5},
+    {L"Dumble Clean",    3,0,0,false,false, 0.3,0.75,0.1,0.9,0.6,0.3,0.7,0.5,0.5,0.5,0.5,0.5,0.5},
+    {L"Klon → Dumble",   3,6,0,true, false, 0.35,0.75,0.1,0.9,0.6,0.3,0.7,0.6,0.6,0.7,0.5,0.5,0.5},
+    {L"TS+SD → Recto",   2,3,1,true, true,  0.75,0.4,0.4,0.85,0.4,0.3,0.5,0.5,0.5,0.55,0.5,0.5,0.52},
 };
 
 pa::Engine* gEngine = nullptr;
@@ -69,7 +95,7 @@ HWND gSliders[NP], gVals[NP], gParamLbl[NP], gStatus, gInCombo, gOutCombo,
      gExcl, gOdOn, gOdB, gStartBtn, gBufCombo, gBackend, gInCh, gEco,
      gCabLabel, gPedalKind, gPedalKindB, gAmpKind, gCabKind,
      gDelayOn, gEqOn, gHpfOn, gLpfOn, gEqFader[9], gEqVal[9],
-     gGateOn, gChorusOn, gRoomOn;
+     gGateOn, gChorusOn, gRoomOn, gPreset, gRectoMode, gRectifier, gCompOn;
 HFONT gFont;
 std::wstring gStatusBase;
 const int kBufSizes[4] = {64, 128, 256, 512};
@@ -106,6 +132,14 @@ void updateValueLabel(int i) {
     SetWindowTextW(gVals[i], buf);
 }
 
+void setSlider(int i, double v) {
+    int pos = static_cast<int>(std::lround(
+        (v - kParams[i].lo) / (kParams[i].hi - kParams[i].lo) * 100.0));
+    pos = pos < 0 ? 0 : (pos > 100 ? 100 : pos);
+    SendMessageW(gSliders[i], TBM_SETPOS, TRUE, pos);
+    updateValueLabel(i);
+}
+
 void applyControls() {
     if (!gEngine) return;
     pa::Controls c;
@@ -133,6 +167,10 @@ void applyControls() {
     if (c.ampKind < 0) c.ampKind = 0;
     c.cabKind = static_cast<int>(SendMessageW(gCabKind, CB_GETCURSEL, 0, 0));
     if (c.cabKind < 0) c.cabKind = 0;
+    c.rectoMode = static_cast<int>(SendMessageW(gRectoMode, CB_GETCURSEL, 0, 0));
+    if (c.rectoMode < 0) c.rectoMode = 2;
+    c.rectType = static_cast<int>(SendMessageW(gRectifier, CB_GETCURSEL, 0, 0));
+    if (c.rectType < 0) c.rectType = 0;
     c.delayOn = SendMessageW(gDelayOn, BM_GETCHECK, 0, 0) == BST_CHECKED;
     c.delayMs = sliderValue(14);
     c.delayFb = sliderValue(15);
@@ -149,6 +187,9 @@ void applyControls() {
     c.chorusDepth = sliderValue(21);
     c.chorusMix = sliderValue(22);
     c.roomOn = SendMessageW(gRoomOn, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    c.compOn = SendMessageW(gCompOn, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    c.compSustain = sliderValue(23);
+    c.compLevel = sliderValue(24);
     for (int b = 0; b < 9; ++b) {   // faders: 0..100 -> -12..+12 dB
         int pos = static_cast<int>(SendMessageW(gEqFader[b], TBM_GETPOS, 0, 0));
         c.eqDb[b] = (50 - pos) * 12.0 / 50.0;   // top = +12, mid = 0
@@ -372,8 +413,11 @@ void buildUi(HWND hwnd) {
     auto pedalCombo = [&](int id, int x, int y) {
         HWND cb = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST,
                      x, y, 190, 160, id);
-        for (auto* n : {L"Boss OD-1 (1977)", L"Boss SD-1 (1981)",
-                        L"Ibanez TS-808", L"Mad Professor Red"})
+        for (auto* n : {L"Boss OD-1 (1977)",
+                        L"Boss SD-1  (white-box)", L"Boss SD-1  (hybrid)",
+                        L"Ibanez TS-808  (white-box)", L"Ibanez TS-808  (hybrid)",
+                        L"Mad Professor Red  (schematic)", L"Klon Centaur  (schematic)",
+                        L"Marshall Bluesbreaker  (schematic)"})
             SendMessageW(cb, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(n));
         return cb;
     };
@@ -381,7 +425,7 @@ void buildUi(HWND hwnd) {
                22, 208, 70, 20, IDC_ODON);
     SendMessageW(gOdOn, BM_SETCHECK, BST_CHECKED, 0);   // preset: on
     gPedalKind = pedalCombo(IDC_PEDAL, 100, 205);
-    SendMessageW(gPedalKind, CB_SETCURSEL, 0, 0);
+    SendMessageW(gPedalKind, CB_SETCURSEL, 3, 0);   // preset: TS-808 white-box
     slider(0, 22, 232, 224);   // A Drive
     slider(10, 22, 262, 224);  // A Tone
     slider(1, 22, 292, 224);   // A Level
@@ -390,7 +434,7 @@ void buildUi(HWND hwnd) {
               22, 326, 70, 20, IDC_ODB);
     SendMessageW(gOdB, BM_SETCHECK, BST_CHECKED, 0);     // preset: on
     gPedalKindB = pedalCombo(IDC_PEDALB, 100, 323);
-    SendMessageW(gPedalKindB, CB_SETCURSEL, 3, 0);   // preset: Mad Red
+    SendMessageW(gPedalKindB, CB_SETCURSEL, 1, 0);   // preset: SD-1 white-box
     slider(11, 22, 350, 224);  // B Drive
     slider(12, 22, 380, 224);  // B Tone
     slider(13, 22, 410, 224);  // B Level
@@ -399,11 +443,30 @@ void buildUi(HWND hwnd) {
     mk(hwnd, L"BUTTON", L"AMPLIFIER", BS_GROUPBOX, 8, 456, 436, 240, 0);
     gAmpKind = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST,
                   22, 476, 250, 160, IDC_AMP);
-    for (auto* n : {L"Fender Princeton Reverb", L"Marshall Super Lead Plexi"})
+    for (auto* n : {L"Fender Princeton Reverb", L"Marshall Super Lead Plexi",
+                    L"Mesa Dual Rectifier", L"Dumble Steel String Singer"})
         SendMessageW(gAmpKind, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(n));
     SendMessageW(gAmpKind, CB_SETCURSEL, 0, 0);
     for (int i = 2; i <= 7; ++i)
         slider(i, 22, 504 + (i - 2) * 30, 224);
+    // factory-preset selector (top-right, free space)
+    mk(hwnd, L"STATIC", L"Preset:", SS_LEFT, 578, 12, 48, 16, 0);
+    gPreset = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST, 626, 9, 250, 300, IDC_PRESET);
+    for (const auto& pr : kPresets)
+        SendMessageW(gPreset, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(pr.name));
+    SendMessageW(gPreset, CB_SETCURSEL, 0, 0);
+    // Dual Rectifier voicing mode + rectifier (power-supply sag) — Recto amp only.
+    // Top-right, stacked under the Preset combo (free space above CE-2 CHORUS).
+    mk(hwnd, L"STATIC", L"Recto Mode:", SS_LEFT, 578, 44, 74, 16, 0);
+    gRectoMode = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST, 656, 41, 220, 120, IDC_RECTOMODE);
+    for (auto* n : {L"Raw", L"Vintage", L"Modern"})
+        SendMessageW(gRectoMode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(n));
+    SendMessageW(gRectoMode, CB_SETCURSEL, 2, 0);
+    mk(hwnd, L"STATIC", L"Rectifier:", SS_LEFT, 578, 74, 74, 16, 0);
+    gRectifier = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST, 656, 71, 220, 120, IDC_RECTIFIER);
+    for (auto* n : {L"Diode (tight)", L"Spongy (sag)"})
+        SendMessageW(gRectifier, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(n));
+    SendMessageW(gRectifier, CB_SETCURSEL, 0, 0);
 
     // ---- LEVELS + noise gate --------------------------------------------
     mk(hwnd, L"BUTTON", L"LEVELS  &  NOISE GATE", BS_GROUPBOX,
@@ -431,13 +494,19 @@ void buildUi(HWND hwnd) {
     slider(15, rx + 14, 394, 190);   // Feedback
     slider(16, rx + 14, 422, 190);   // Mix
 
-    mk(hwnd, L"BUTTON", L"STUDIO ROOM MIC  (stereo)",
+    mk(hwnd, L"BUTTON", L"DIGITAL REVERB  (after delay, stereo)",
        BS_GROUPBOX, rx, 458, 436, 96, 0);
     gRoomOn = mk(hwnd, L"BUTTON", L"Engage", BS_AUTOCHECKBOX,
                  rx + 300, 478, 120, 20, IDC_ROOMON);
-    SendMessageW(gRoomOn, BM_SETCHECK, BST_CHECKED, 0);    // preset: on
-    slider(17, rx + 14, 478, 190);   // Room amount
-    slider(18, rx + 14, 508, 190);   // Width
+    SendMessageW(gRoomOn, BM_SETCHECK, BST_UNCHECKED, 0);  // preset: off
+    slider(17, rx + 14, 478, 190);   // reverb Decay
+    slider(18, rx + 14, 508, 190);   // reverb Mix
+    // ---- KEELEY COMPRESSOR (front of chain, before the drives) ----------
+    mk(hwnd, L"BUTTON", L"KEELEY COMPRESSOR  (front, before drives)",
+       BS_GROUPBOX, 8, 836, 436, 82, 0);
+    gCompOn = mk(hwnd, L"BUTTON", L"Engage", BS_AUTOCHECKBOX, 300, 858, 120, 20, IDC_COMPON);
+    slider(23, 22, 858, 224);   // Sustain
+    slider(24, 22, 886, 224);   // Comp Level
 
     // ---- 9-band GRAPHIC EQ (the reference pedal) -------------------------
     mk(hwnd, L"BUTTON", L"GRAPHIC EQ  (stereo, signal tail)",
@@ -473,9 +542,25 @@ void buildUi(HWND hwnd) {
 
 void relabelAmp() {
     int a = static_cast<int>(SendMessageW(gAmpKind, CB_GETCURSEL, 0, 0));
-    if (a < 0 || a > 1) a = 0;
+    if (a < 0 || a > 3) a = 0;
     for (int i = 2; i <= 7; ++i)
         SetWindowTextW(gParamLbl[i], kAmpLabels[a][i - 2]);
+}
+
+void applyPreset(int i) {
+    if (i <= 0 || i >= static_cast<int>(sizeof(kPresets) / sizeof(kPresets[0]))) return;
+    const Preset& p = kPresets[i];
+    SendMessageW(gAmpKind, CB_SETCURSEL, p.amp, 0);
+    SendMessageW(gPedalKind, CB_SETCURSEL, p.pa, 0);
+    SendMessageW(gPedalKindB, CB_SETCURSEL, p.pb, 0);
+    SendMessageW(gOdOn, BM_SETCHECK, p.aOn ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageW(gOdB, BM_SETCHECK, p.bOn ? BST_CHECKED : BST_UNCHECKED, 0);
+    setSlider(2, p.vol);  setSlider(3, p.treb); setSlider(4, p.bas);  setSlider(5, p.rev);
+    setSlider(6, p.tspd); setSlider(7, p.tint); setSlider(9, p.mstr);
+    setSlider(0, p.ad);   setSlider(10, p.at);  setSlider(1, p.al);
+    setSlider(11, p.bd);  setSlider(12, p.bt);  setSlider(13, p.bl);
+    relabelAmp();
+    applyControls();
 }
 
 LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -528,7 +613,11 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 case IDC_DELAYON:
                 case IDC_EQON:
                 case IDC_HPFON:
-                case IDC_LPFON: applyControls(); return 0;
+                case IDC_LPFON:
+                case IDC_GATEON:      // were MISSING -> toggling Gate/Chorus/Room did
+                case IDC_CHORUSON:    // nothing until a slider drag fired applyControls
+                case IDC_ROOMON:
+                case IDC_COMPON: applyControls(); return 0;
                 case IDC_AMP:
                     if (HIWORD(wp) == CBN_SELCHANGE) {
                         relabelAmp();
@@ -538,6 +627,15 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 case IDC_PEDAL:
                 case IDC_PEDALB:
                 case IDC_CABKIND:
+                    if (HIWORD(wp) == CBN_SELCHANGE) applyControls();
+                    return 0;
+                case IDC_PRESET:
+                    if (HIWORD(wp) == CBN_SELCHANGE)
+                        applyPreset(static_cast<int>(
+                            SendMessageW(gPreset, CB_GETCURSEL, 0, 0)));
+                    return 0;
+                case IDC_RECTOMODE:
+                case IDC_RECTIFIER:
                     if (HIWORD(wp) == CBN_SELCHANGE) applyControls();
                     return 0;
                 case IDC_BACKEND:
@@ -574,15 +672,15 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nShow) {
     wc.hInstance = hInst;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
-    wc.lpszClassName = L"PrincetonPractice";
+    wc.lpszClassName = L"VibeSTPracticeAmp";
     RegisterClassW(&wc);
 
-    RECT r{0, 0, 908, 912};
+    RECT r{0, 0, 908, 940};
     AdjustWindowRect(&r, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU
                      | WS_MINIMIZEBOX, FALSE);
     HWND hwnd = CreateWindowExW(
         0, wc.lpszClassName,
-        L"Princeton Reverb + OD-1  (white-box circuit simulation)",
+        L"VibeST Practice Amp  (white-box circuit simulation)",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top,
         nullptr, nullptr, hInst, nullptr);

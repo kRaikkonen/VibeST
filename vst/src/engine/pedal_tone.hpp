@@ -116,4 +116,27 @@ inline MnaTone sd1_tone(double fs, double tone) {
     n.Opamp(2, 3, 4); n.compile(4); return n;
 }
 
+// Marshall Bluesbreaker — PASSIVE treble-cut (real values, AionFX Cerulean): R4 10k
+// series, C4 10n treble-bleed cap, Tone 25k pot to ground (more = brighter). White-box.
+inline MnaTone bb_tone(double fs, double tone) {
+    double tw = std::min(std::max(tone, 1e-3), 0.999);
+    MnaTone n(3, fs); n.Vsrc(1);
+    n.R(1, 2, 10e3);            // R4 series (source impedance)
+    n.Cap(2, 3, 10e-9);         // C4 treble-bleed
+    n.R(3, 0, tw * 25e3);       // Tone pot 25k to gnd (tw->0 = full treble cut)
+    n.compile(2); return n;
+}
+
+// Mad Professor / BJFE Dyna Red — PASSIVE "Treble" cut (real values): 3k series,
+// 47n treble-bleed via 50k pot, 22n fixed to ground. White-box.
+inline MnaTone dynared_tone(double fs, double tone) {
+    double tw = std::min(std::max(tone, 1e-3), 0.999);
+    MnaTone n(3, fs); n.Vsrc(1);
+    n.R(1, 2, 3e3);             // 3k series
+    n.Cap(2, 3, 47e-9);         // 47n treble-bleed
+    n.R(3, 0, tw * 50e3);       // Treble pot 50k
+    n.Cap(2, 0, 22e-9);         // 22n fixed treble roll to gnd
+    n.compile(2); return n;
+}
+
 }  // namespace pedal

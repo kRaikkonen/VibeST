@@ -199,6 +199,82 @@ private:
     double dampL_ = 0, dampR_ = 0;
 };
 
+// ---- Keeley-style feed-forward compressor (front of chain, before the drives) ----
+// Sustain lowers threshold + raises ratio; Level = makeup. Musical/fast.
+class Compressor {
+public:
+    void init(double fs) {
+        fs_ = fs; env_ = 0.0;
+        atk_ = std::exp(-1.0 / (0.004 * fs));   // ~4 ms attack
+        rel_ = std::exp(-1.0 / (0.18 * fs));    // ~180 ms release
+    }
+    void setSustain(double s) {
+        s = std::clamp(s, 0.0, 1.0);
+        thr_ = 0.5 - 0.46 * s;                  // more sustain -> squash sooner
+        ratio_ = 2.0 + 8.0 * s;                 // and harder
+    }
+    void setLevel(double l) { makeup_ = 0.4 + 1.8 * std::clamp(l, 0.0, 1.0); }
+    double process(double x) {
+        double a = std::fabs(x);
+        env_ = a > env_ ? atk_ * env_ + (1 - atk_) * a : rel_ * env_ + (1 - rel_) * a;
+        double g = 1.0;
+        if (env_ > thr_ && env_ > 1e-9)
+            g = std::pow(env_ / thr_, (1.0 / ratio_) - 1.0);   // gain reduction above thr
+        return x * g * makeup_;
+    }
+private:
+    double fs_ = 48000, env_ = 0, atk_ = 0.99, rel_ = 0.999;
+    double thr_ = 0.3, ratio_ = 4.0, makeup_ = 1.0;
+};
+
+// ---- digital reverb (Freeverb: 8 comb + 4 allpass per channel, stereo) ----------
+class Reverb {
+public:
+    void init(double fs) {
+        double sc = fs / 44100.0;
+        const int cT[8] = {1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617};
+        const int aT[4] = {556, 441, 341, 225};
+        const int spread = 23;
+        for (int i = 0; i < 8; ++i) {
+            cL_[i].assign((size_t)(cT[i] * sc) + 1, 0.0); ciL_[i] = 0; dL_[i] = 0;
+            cR_[i].assign((size_t)((cT[i] + spread) * sc) + 1, 0.0); ciR_[i] = 0; dR_[i] = 0;
+        }
+        for (int i = 0; i < 4; ++i) {
+            aL_[i].assign((size_t)(aT[i] * sc) + 1, 0.0); aiL_[i] = 0;
+            aR_[i].assign((size_t)((aT[i] + spread) * sc) + 1, 0.0); aiR_[i] = 0;
+        }
+    }
+    void setDecay(double d) { fb_ = 0.70 + 0.288 * std::clamp(d, 0.0, 1.0); }  // room size
+    void setMix(double m) { mix_ = std::clamp(m, 0.0, 1.0); }
+    void process(double x, double& outL, double& outR) {
+        double in = x * 0.015;
+        double wl = 0.0, wr = 0.0;
+        for (int i = 0; i < 8; ++i) { wl += comb(cL_[i], ciL_[i], dL_[i], in);
+                                      wr += comb(cR_[i], ciR_[i], dR_[i], in); }
+        for (int i = 0; i < 4; ++i) { wl = allp(aL_[i], aiL_[i], wl);
+                                      wr = allp(aR_[i], aiR_[i], wr); }
+        outL = x * (1.0 - mix_) + wl * mix_;
+        outR = x * (1.0 - mix_) + wr * mix_;
+    }
+private:
+    double comb(std::vector<double>& b, size_t& i, double& damp, double in) {
+        double y = b[i];
+        damp = y * (1.0 - damp_) + damp * damp_;      // HF damping in the loop
+        b[i] = in + damp * fb_;
+        i = (i + 1) % b.size();
+        return y;
+    }
+    double allp(std::vector<double>& b, size_t& i, double in) {
+        double y = b[i];
+        b[i] = in + y * 0.5;
+        i = (i + 1) % b.size();
+        return y - in;
+    }
+    std::vector<double> cL_[8], cR_[8], aL_[4], aR_[4];
+    size_t ciL_[8]{}, ciR_[8]{}, aiL_[4]{}, aiR_[4]{};
+    double dL_[8]{}, dR_[8]{}, fb_ = 0.84, mix_ = 0.3, damp_ = 0.3;
+};
+
 // ---- 9-band graphic EQ + HPF/LPF (the pedal in the reference image) ---------
 // Bands: 75 150 250 400 800 1.5k 4.5k 8k 12k Hz. Each is a peaking biquad.
 // HPF/LPF are switchable (0 = off). Runs per stereo channel.
