@@ -16,7 +16,8 @@
 namespace {
 
 // App title / version. Bump the last number on every feature update.
-constexpr const wchar_t* kAppTitle = L"VibeST Practice AMP  v0.1.1  by kRaikkonen";
+constexpr const wchar_t* kAppTitle = L"VibeST Practice AMP  v0.1.2  by kRaikkonen";
+constexpr int IDI_APPICON = 101;   // matches app.rc
 
 constexpr int IDC_IN = 100, IDC_OUT = 101, IDC_EXCL = 102, IDC_START = 103,
               IDC_ODON = 104, IDC_CAB = 105, IDC_STATUS = 106, IDC_BUF = 107,
@@ -932,13 +933,18 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nShow) {
 
     ensureEngine(true);   // default Eco / low-CPU (48 kHz) to avoid ASIO overrun
 
-    WNDCLASSW wc = {};
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = wndProc;
     wc.hInstance = hInst;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
     wc.lpszClassName = L"VibeSTPracticeAmp";
-    RegisterClassW(&wc);
+    wc.hIcon = static_cast<HICON>(LoadImageW(hInst, MAKEINTRESOURCEW(IDI_APPICON),
+                                             IMAGE_ICON, 32, 32, LR_DEFAULTCOLOR));
+    wc.hIconSm = static_cast<HICON>(LoadImageW(hInst, MAKEINTRESOURCEW(IDI_APPICON),
+                                               IMAGE_ICON, 16, 16, LR_DEFAULTCOLOR));
+    RegisterClassExW(&wc);
 
     RECT r{0, 0, 908, 1006};
     AdjustWindowRect(&r, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU

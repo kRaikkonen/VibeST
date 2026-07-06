@@ -29,11 +29,13 @@ g++ -O3 -std=c++20 -static -D__WINDOWS_ASIO__ -Irtaudio -Irtaudio/include \
     -lcomctl32 -lole32
 ```
 
-GUI front-end (adds `-mwindows -municode` and `-lcomdlg32`):
+GUI front-end (adds `-mwindows -municode` and `-lcomdlg32`). First compile the app
+icon resource (`app.rc` -> `docs/logo.ico`) with `windres`, then link the `.o`:
 ```sh
+windres app.rc -O coff -o app_res.o
 g++ -O3 -std=c++20 -static -mwindows -municode -D__WINDOWS_ASIO__ \
-    -Irtaudio -Irtaudio/include -o PrincetonPracticeGUI.exe \
-    src/standalone/practice_amp_gui.cpp \
+    -Irtaudio -Irtaudio/include -o "VibeST Practice AMP v0.1.2.exe" \
+    src/standalone/practice_amp_gui.cpp app_res.o \
     rtaudio/RtAudio.cpp rtaudio/include/asio.cpp rtaudio/include/asiodrivers.cpp \
     rtaudio/include/asiolist.cpp rtaudio/include/iasiothiscallresolver.cpp \
     -lcomctl32 -lcomdlg32 -lole32

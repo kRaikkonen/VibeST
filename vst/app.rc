@@ -1,0 +1,3 @@
+// Windows resource: application icon (title bar, taskbar, Explorer).
+#define IDI_APPICON 101
+IDI_APPICON ICON "docs/logo.ico"
