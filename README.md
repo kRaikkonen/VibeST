@@ -1,5 +1,7 @@
 # VibeST Practice Amp
 
+### ⬇️ Download / 下载:&nbsp; **[VibeST Practice AMP (Windows .exe)](https://drive.google.com/file/d/1x4sYkmnNELDiNcK76MHdJWW7ZQcbYrOy/view?usp=sharing)**
+
 **A white-box, real-time guitar amp & pedal simulator for Windows.**
 **一个纯白盒、实时的电吉他音箱 / 效果器模拟器(Windows)。**
 
