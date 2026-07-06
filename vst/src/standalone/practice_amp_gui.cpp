@@ -403,40 +403,42 @@ void buildUi(HWND hwnd) {
                    CBS_DROPDOWNLIST | WS_VSCROLL, 76, 70, 360, 200, IDC_OUT);
 
     gExcl = mk(hwnd, L"BUTTON", L"Exclusive", BS_AUTOCHECKBOX,
-               12, 104, 90, 22, IDC_EXCL);
+               12, 104, 82, 22, IDC_EXCL);
     SendMessageW(gExcl, BM_SETCHECK, BST_CHECKED, 0);
-    mk(hwnd, L"STATIC", L"Buffer:", 0, 108, 108, 46, 20, 0);
+    mk(hwnd, L"STATIC", L"Buffer:", 0, 98, 108, 44, 20, 0);
     gBufCombo = mk(hwnd, L"COMBOBOX", nullptr,
-                   CBS_DROPDOWNLIST, 156, 104, 66, 160, IDC_BUF);
+                   CBS_DROPDOWNLIST, 144, 104, 58, 160, IDC_BUF);
     for (int b : kBufSizes) {
         wchar_t t[8];
         swprintf(t, 8, L"%d", b);
         SendMessageW(gBufCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(t));
     }
-    SendMessageW(gBufCombo, CB_SETCURSEL, 2, 0);   // default 256 (overrun headroom)
-    gStartBtn = mk(hwnd, L"BUTTON", L"Start", BS_PUSHBUTTON,
-                   232, 102, 90, 26, IDC_START);
-    mk(hwnd, L"BUTTON", L"Load Cab IR...", BS_PUSHBUTTON,
-       330, 102, 106, 26, IDC_CAB);
-    gStatus = mk(hwnd, L"STATIC", L"stopped", 0, 12, 132, 424, 20,
-                 IDC_STATUS);
-
-    mk(hwnd, L"STATIC", L"SR:", 0, 126, 162, 24, 18, 0);   // ASIO output sample rate
-    gSrCombo = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST, 150, 158, 76, 160, IDC_SRATE);
+    SendMessageW(gBufCombo, CB_SETCURSEL, 1, 0);   // default 128
+    // sample-rate selector: 48 kHz engine-native, or 44.1 kHz (resampled) to
+    // match a 44.1 playback chain. Next to Buffer where audio settings live.
+    mk(hwnd, L"STATIC", L"Rate:", 0, 210, 108, 38, 20, 0);
+    gSrCombo = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST, 250, 104, 84, 160, IDC_SRATE);
     for (auto* n : {L"48 kHz", L"44.1 kHz"})
         SendMessageW(gSrCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(n));
     SendMessageW(gSrCombo, CB_SETCURSEL, 0, 0);   // default 48 kHz (engine-native, no resample)
+    gStartBtn = mk(hwnd, L"BUTTON", L"Start", BS_PUSHBUTTON,
+                   344, 102, 90, 26, IDC_START);
+    gStatus = mk(hwnd, L"STATIC", L"stopped", 0, 12, 132, 424, 20,
+                 IDC_STATUS);
+
     gEco = mk(hwnd, L"BUTTON", L"Eco (low CPU)", BS_AUTOCHECKBOX,
-              12, 158, 110, 22, IDC_ECO);
+              12, 158, 108, 22, IDC_ECO);
     SendMessageW(gEco, BM_SETCHECK, BST_CHECKED, 0);   // default: on (48 kHz, avoids ASIO overrun)
-    mk(hwnd, L"STATIC", L"Cab:", 0, 232, 162, 32, 18, 0);
+    mk(hwnd, L"STATIC", L"Cab:", 0, 126, 162, 28, 18, 0);
     gCabKind = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST,
-                  266, 158, 150, 140, IDC_CABKIND);
+                  156, 158, 148, 140, IDC_CABKIND);
     for (auto* n : {L"Jensen C10R 1x10", L"Greenback 2x12",
                     L"Greenback 4x12"})
         SendMessageW(gCabKind, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(n));
     SendMessageW(gCabKind, CB_SETCURSEL, 2, 0);           // preset: GB 4x12
-    gCabLabel = mk(hwnd, L"STATIC", L"(built-in)", 0, 224, 182, 100, 16, 0);
+    mk(hwnd, L"BUTTON", L"Load Cab IR...", BS_PUSHBUTTON,
+       310, 156, 124, 26, IDC_CAB);
+    gCabLabel = mk(hwnd, L"STATIC", L"(built-in)", 0, 314, 184, 120, 14, 0);
 
     populateDevices();
 
