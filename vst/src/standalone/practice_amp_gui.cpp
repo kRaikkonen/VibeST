@@ -25,7 +25,7 @@ constexpr int IDC_IN = 100, IDC_OUT = 101, IDC_EXCL = 102, IDC_START = 103,
               IDC_PRESET = 130, IDC_RECTOMODE = 131, IDC_RECTIFIER = 132,
               IDC_COMPON = 133, IDC_METER = 134, IDC_REVERBON = 135,
               IDC_TUNER = 136, IDC_PITCHON = 137, IDC_TUNERON = 138,
-              IDC_TRANSPOSE = 139,
+              IDC_TRANSPOSE = 139, IDC_SHIFTEDIT = 150,
               IDC_EQ0 = 200;              // 200..208 = 9 EQ faders
 constexpr int IDC_SLIDER0 = 120;   // 10 sliders: 120..129
 constexpr int IDC_VAL0 = 140;      // value labels: 140..149
@@ -34,7 +34,7 @@ struct Param {
     const wchar_t* name;
     double lo, hi, def;
 };
-const Param kParams[29] = {
+const Param kParams[32] = {
     {L"Drive", 0, 1, 0.6},        {L"Level", 0, 1, 0.35},
     {L"Volume", 0, 1, 0.83},      {L"Treble", 0, 1, 0.63},
     {L"Bass", 0, 1, 0.43},        {L"Reverb", 0, 1, 0.15},
@@ -49,18 +49,21 @@ const Param kParams[29] = {
     {L"E.Level", 0, 1.5, 0.6},    // 16: delay repeat level (Boss E.Level)
     {L"Room", 0, 1, 0.25},        // 17: room mic amount
     {L"Width", 0, 1, 0.8},        // 18: room mic width
-    {L"Threshold", 0, 1, 0.25},   // 19: noise gate threshold
+    {L"Thresh", 0, 1, 0.25},      // 19: noise gate threshold
     {L"Rate", 0, 1, 0.4},         // 20: chorus rate
     {L"Depth", 0, 1, 0.55},       // 21: chorus depth
     {L"Mix", 0, 1, 1.0},          // 22: chorus mix
     {L"Sustain", 0, 1, 0.5},      // 23: compressor sustain
-    {L"Comp Lvl", 0, 1, 0.6},     // 24: compressor level
+    {L"Level", 0, 1, 0.6},        // 24: compressor level
     {L"Decay", 0, 1, 0.6},        // 25: reverb decay
     {L"R.Mix", 0, 1, 0.35},       // 26: reverb mix
     {L"Ref A", 425, 455, 440},    // 27: tuner reference A (Hz, display-only)
     {L"Shift Hz", 415, 470, 440}, // 28: pitch-shift target A (Hz)
+    {L"Decay", 0, 1, 0.4},        // 29: noise gate decay/release
+    {L"Blend", 0, 1, 1.0},        // 30: compressor dry/wet blend
+    {L"Tone", 0, 1, 0.5},         // 31: compressor tone tilt
 };
-constexpr int NP = 29;
+constexpr int NP = 32;
 // amp-dependent labels for sliders 2..7
 const wchar_t* kAmpLabels[4][6] = {
     {L"Volume", L"Treble", L"Bass", L"Reverb", L"Trem Speed",
@@ -106,7 +109,7 @@ HWND gSliders[NP], gVals[NP], gParamLbl[NP], gStatus, gInCombo, gOutCombo,
      gCabLabel, gPedalKind, gPedalKindB, gAmpKind, gCabKind,
      gDelayOn, gEqOn, gHpfOn, gLpfOn, gEqFader[9], gEqVal[9],
      gGateOn, gChorusOn, gRoomOn, gPreset, gRectoMode, gRectifier, gCompOn, gMeter,
-     gReverbOn, gTuner, gTunerNote, gPitchOn, gTunerOn, gTranspose;
+     gReverbOn, gTuner, gTunerNote, gPitchOn, gTunerOn, gTranspose, gShiftEdit;
 HFONT gFont;
 HFONT gFontBig = nullptr;   // large bold font for the prominent Master value
 RECT  gMasterFrame = {};    // red highlight box drawn around the Master control
@@ -144,8 +147,16 @@ double sliderValue(int i) {
 
 void updateValueLabel(int i) {
     wchar_t buf[32];
-    swprintf(buf, 32, L"%.3f", sliderValue(i));
-    SetWindowTextW(gVals[i], buf);
+    if (i == 14)                          // delay time keeps real milliseconds
+        swprintf(buf, 32, L"%.0f ms", sliderValue(i));
+    else if (i == 27 || i == 28)          // tuner reference / shift target keep real Hz
+        swprintf(buf, 32, L"%.1f", sliderValue(i));
+    else {                                // all other knobs read as amp-style 0.0-10.0
+        int pos = static_cast<int>(SendMessageW(gSliders[i], TBM_GETPOS, 0, 0));
+        swprintf(buf, 32, L"%.1f", pos / 10.0);
+    }
+    if (i == 28 && gShiftEdit) SetWindowTextW(gShiftEdit, buf);   // Shift Hz -> editable box
+    else SetWindowTextW(gVals[i], buf);
 }
 
 void setSlider(int i, double v) {
@@ -198,6 +209,7 @@ void applyControls() {
     c.eqLpfOn = SendMessageW(gLpfOn, BM_GETCHECK, 0, 0) == BST_CHECKED;
     c.gateOn = SendMessageW(gGateOn, BM_GETCHECK, 0, 0) == BST_CHECKED;
     c.gateThresh = sliderValue(19);
+    c.gateDecay = sliderValue(29);
     c.chorusOn = SendMessageW(gChorusOn, BM_GETCHECK, 0, 0) == BST_CHECKED;
     c.chorusRate = sliderValue(20);
     c.chorusDepth = sliderValue(21);
@@ -206,6 +218,8 @@ void applyControls() {
     c.compOn = SendMessageW(gCompOn, BM_GETCHECK, 0, 0) == BST_CHECKED;
     c.compSustain = sliderValue(23);
     c.compLevel = sliderValue(24);
+    c.compBlend = sliderValue(30);
+    c.compTone = sliderValue(31);
     c.reverbOn = SendMessageW(gReverbOn, BM_GETCHECK, 0, 0) == BST_CHECKED;
     c.reverbDecay = sliderValue(25);
     c.reverbMix = sliderValue(26);
@@ -407,6 +421,7 @@ void buildUi(HWND hwnd) {
 
     gEco = mk(hwnd, L"BUTTON", L"Eco (low CPU)", BS_AUTOCHECKBOX,
               12, 158, 110, 22, IDC_ECO);
+    SendMessageW(gEco, BM_SETCHECK, BST_CHECKED, 0);   // default: on (48 kHz, avoids ASIO overrun)
     mk(hwnd, L"STATIC", L"Cab:", 0, 232, 162, 32, 18, 0);
     gCabKind = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST,
                   266, 158, 150, 140, IDC_CABKIND);
@@ -432,6 +447,20 @@ void buildUi(HWND hwnd) {
                       IDC_VAL0 + i);
         updateValueLabel(i);
     };
+    // compact slider variant (custom label + track widths) for the two narrow
+    // side-by-side panels (Noise Gate | Compressor).
+    auto sliderN = [&](int i, int x, int y, int lblW, int trkW) {
+        gParamLbl[i] = mk(hwnd, L"STATIC", kParams[i].name, 0, x, y + 5, lblW, 18, 0);
+        gSliders[i] = mk(hwnd, TRACKBAR_CLASSW, nullptr, TBS_HORZ,
+                         x + lblW + 4, y, trkW, 24, IDC_SLIDER0 + i);
+        SendMessageW(gSliders[i], TBM_SETRANGE, TRUE, MAKELPARAM(0, 100));
+        int pos = static_cast<int>((kParams[i].def - kParams[i].lo)
+            / (kParams[i].hi - kParams[i].lo) * 100.0 + 0.5);
+        SendMessageW(gSliders[i], TBM_SETPOS, TRUE, pos);
+        gVals[i] = mk(hwnd, L"STATIC", L"", 0, x + lblW + 4 + trkW + 4, y + 5, 40, 18,
+                      IDC_VAL0 + i);
+        updateValueLabel(i);
+    };
 
     // ============ LEFT COLUMN: signal chain, input -> amp =================
     // ---- TUNER + SHIFT POSE (input stage) --------------------------------
@@ -442,22 +471,26 @@ void buildUi(HWND hwnd) {
     slider(27, 22, 232, 130);   // Ref A: tuner calibration (425-455 Hz)
     gTunerOn = mk(hwnd, L"BUTTON", L"Tuner On", BS_AUTOCHECKBOX,
                   330, 232, 110, 22, IDC_TUNERON);
-    SendMessageW(gTunerOn, BM_SETCHECK, BST_CHECKED, 0);   // default: on
-    slider(28, 22, 262, 130);   // Shift Hz: pitch-shift target A
+    SendMessageW(gTunerOn, BM_SETCHECK, BST_UNCHECKED, 0);   // default: off (saves CPU)
+    slider(28, 22, 262, 130);   // Shift Hz: pitch-shift target A (editable box below)
+    gShiftEdit = mk(hwnd, L"EDIT", L"", ES_AUTOHSCROLL | WS_BORDER, 262, 263, 60, 22, IDC_SHIFTEDIT);
+    updateValueLabel(28);       // populate the edit box now that it exists
     gPitchOn = mk(hwnd, L"BUTTON", L"Shift Pose", BS_AUTOCHECKBOX,
                   330, 262, 110, 22, IDC_PITCHON);
 
-    // ---- DYNAMICS: noise gate + compressor (BEFORE the drives) -----------
-    mk(hwnd, L"BUTTON", L"DYNAMICS  (gate + compressor, before drives)",
-       BS_GROUPBOX, 8, 298, 436, 138, 0);
-    gGateOn = mk(hwnd, L"BUTTON", L"Noise Gate", BS_AUTOCHECKBOX,
-                 22, 314, 120, 20, IDC_GATEON);
+    // ---- NOISE GATE | COMPRESSOR (before the drives), side by side --------
+    mk(hwnd, L"BUTTON", L"NOISE GATE", BS_GROUPBOX, 8, 298, 214, 138, 0);
+    gGateOn = mk(hwnd, L"BUTTON", L"On", BS_AUTOCHECKBOX, 152, 314, 56, 20, IDC_GATEON);
     SendMessageW(gGateOn, BM_SETCHECK, BST_CHECKED, 0);   // preset: on
-    gCompOn = mk(hwnd, L"BUTTON", L"Compressor", BS_AUTOCHECKBOX,
-                 250, 314, 130, 20, IDC_COMPON);
-    slider(19, 22, 340, 224);   // Gate threshold
-    slider(23, 22, 370, 224);   // Comp Sustain
-    slider(24, 22, 400, 224);   // Comp Level
+    sliderN(19, 16, 334, 54, 84);   // Threshold
+    sliderN(29, 16, 360, 54, 84);   // Decay
+
+    mk(hwnd, L"BUTTON", L"COMPRESSOR", BS_GROUPBOX, 226, 298, 218, 138, 0);
+    gCompOn = mk(hwnd, L"BUTTON", L"On", BS_AUTOCHECKBOX, 378, 314, 56, 20, IDC_COMPON);
+    sliderN(23, 234, 334, 54, 84);  // Sustain
+    sliderN(24, 234, 360, 54, 84);  // Level
+    sliderN(30, 234, 386, 54, 84);  // Blend
+    sliderN(31, 234, 412, 54, 84);  // Tone
 
     // ---- PEDALBOARD: two stackable slots, A feeds B ----------------------
     mk(hwnd, L"BUTTON", L"PEDALBOARD  (A → B → amp)",
@@ -517,7 +550,7 @@ void buildUi(HWND hwnd) {
     for (const auto& pr : kPresets)
         SendMessageW(gPreset, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(pr.name));
     SendMessageW(gPreset, CB_SETCURSEL, 0, 0);
-    mk(hwnd, L"STATIC", L"Recto Mode:", SS_LEFT, 578, 44, 74, 16, 0);
+    mk(hwnd, L"STATIC", L"Recto Mode (Dual Rect only):", SS_LEFT, 452, 44, 200, 16, 0);
     gRectoMode = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST, 656, 41, 220, 120, IDC_RECTOMODE);
     for (auto* n : {L"Raw", L"Vintage", L"Modern"})
         SendMessageW(gRectoMode, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(n));
@@ -715,6 +748,14 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             switch (LOWORD(wp)) {
                 case IDC_START: startStop(hwnd); return 0;
                 case IDC_CAB: loadCabDialog(hwnd); return 0;
+                case IDC_SHIFTEDIT:   // manual Hz entry for Shift Pose
+                    if (HIWORD(wp) == EN_KILLFOCUS) {
+                        wchar_t t[32]; GetWindowTextW(gShiftEdit, t, 32);
+                        double hz = wcstod(t, nullptr);
+                        if (hz >= 415.0 && hz <= 470.0) { setSlider(28, hz); applyControls(); }
+                        else updateValueLabel(28);   // out of range/garbage -> revert
+                    }
+                    return 0;
                 case IDC_ODON:
                 case IDC_ODB:
                 case IDC_DELAYON:
@@ -849,7 +890,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int nShow) {
                            &gNCapture);
     gAsio.refresh();
 
-    ensureEngine(false);
+    ensureEngine(true);   // default Eco / low-CPU (48 kHz) to avoid ASIO overrun
 
     WNDCLASSW wc = {};
     wc.lpfnWndProc = wndProc;

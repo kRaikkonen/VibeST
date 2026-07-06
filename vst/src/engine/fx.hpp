@@ -29,6 +29,11 @@ public:
         // 0..1 -> -70..-20 dBFS threshold
         thr_ = std::pow(10.0, (-70.0 + 50.0 * std::clamp(t01, 0.0, 1.0)) / 20.0);
     }
+    void setDecay(double d01) {
+        // gate close (release) time: 0..1 -> 30..600 ms (higher = slower close)
+        double relS = 0.03 + 0.57 * std::clamp(d01, 0.0, 1.0);
+        relA_ = 1.0 - std::exp(-1.0 / (relS * fs_));
+    }
     double process(double x) {
         double e = std::fabs(x);
         env_ += (e > env_ ? atkA_ : relA_) * (e - env_);
@@ -205,9 +210,10 @@ private:
 class Compressor {
 public:
     void init(double fs) {
-        fs_ = fs; env_ = 0.0;
+        fs_ = fs; env_ = 0.0; lp_ = 0.0;
         atk_ = std::exp(-1.0 / (0.004 * fs));   // ~4 ms attack
         rel_ = std::exp(-1.0 / (0.18 * fs));    // ~180 ms release
+        toneA_ = 1.0 - std::exp(-2.0 * kPi * 800.0 / fs);   // tilt pivot ~800 Hz
     }
     void setSustain(double s) {
         s = std::clamp(s, 0.0, 1.0);
@@ -215,17 +221,24 @@ public:
         ratio_ = 2.0 + 8.0 * s;                 // and harder
     }
     void setLevel(double l) { makeup_ = 0.4 + 1.8 * std::clamp(l, 0.0, 1.0); }
+    void setBlend(double b) { blend_ = std::clamp(b, 0.0, 1.0); }   // dry <-> compressed
+    void setTone(double t) { tone_ = std::clamp(t, 0.0, 1.0); }     // 0.5 = flat, up = brighter
     double process(double x) {
         double a = std::fabs(x);
         env_ = a > env_ ? atk_ * env_ + (1 - atk_) * a : rel_ * env_ + (1 - rel_) * a;
         double g = 1.0;
         if (env_ > thr_ && env_ > 1e-9)
             g = std::pow(env_ / thr_, (1.0 / ratio_) - 1.0);   // gain reduction above thr
-        return x * g * makeup_;
+        double wet = x * g * makeup_;
+        double y = x * (1.0 - blend_) + wet * blend_;          // parallel (NY) blend
+        lp_ += toneA_ * (y - lp_);                             // split ~800 Hz
+        double hi = y - lp_;
+        return lp_ * (2.0 - 2.0 * tone_) + hi * (2.0 * tone_); // tilt: flat at 0.5
     }
 private:
     double fs_ = 48000, env_ = 0, atk_ = 0.99, rel_ = 0.999;
     double thr_ = 0.3, ratio_ = 4.0, makeup_ = 1.0;
+    double blend_ = 1.0, tone_ = 0.5, lp_ = 0.0, toneA_ = 0.1;
 };
 
 // ---- digital reverb (Freeverb: 8 comb + 4 allpass per channel, stereo) ----------

@@ -38,7 +38,7 @@ constexpr int kChunk384 = 8 * kChunk48;     // OD-1 runs here (its valid rate)
 struct Controls {
     // front of chain: noise gate
     bool gateOn = true;
-    double gateThresh = 0.25;
+    double gateThresh = 0.25, gateDecay = 0.4;
     // two stackable pedal slots (A feeds B feeds the amp) -- user preset
     bool aOn = true, bOn = true;
     int aKind = 0, bKind = 3;       // 0 OD-1, 1 SD-1, 2 TS-808, 3 Mad Red
@@ -58,7 +58,7 @@ struct Controls {
     bool reverbOn = false;                         // digital reverb (Freeverb)
     double reverbDecay = 0.6, reverbMix = 0.35;
     bool compOn = false;                           // Keeley compressor (front of chain)
-    double compSustain = 0.5, compLevel = 0.6;
+    double compSustain = 0.5, compLevel = 0.6, compBlend = 1.0, compTone = 0.5;
     bool pitchOn = false;                          // "shift pose" pitch shifter (input)
     double pitchTarget = 440.0;                    // target A (Hz); ratio = target / 440
     int transpose = 0;                             // digital capo: semitones (-12..+12)
@@ -260,6 +260,7 @@ struct Engine {
         if (c.cabKind != ctl.cabKind) rebuildCab(c.cabKind);
         // gate + chorus + post-amp FX
         gate_.setThreshold(c.gateThresh);
+        gate_.setDecay(c.gateDecay);
         chorus_.setRate(c.chorusRate);
         chorus_.setDepth(c.chorusDepth);
         chorus_.setMix(c.chorusMix);
@@ -272,6 +273,8 @@ struct Engine {
         reverb_.setMix(c.reverbMix);
         comp_.setSustain(c.compSustain);
         comp_.setLevel(c.compLevel);
+        comp_.setBlend(c.compBlend);
+        comp_.setTone(c.compTone);
         // combined pitch shift: fine "shift pose" (Hz) × digital capo (semitones),
         // applied by one shifter so the two don't stack artifacts.
         double poseRatio = c.pitchOn ? c.pitchTarget / 440.0 : 1.0;
