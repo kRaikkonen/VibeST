@@ -242,20 +242,23 @@ struct Engine {
         // Marshall Plexi control map: Volume->Gain, Reverb->Middle,
         // TremSpeed->Presence, TremIntensity->High Treble (bright)
         plexiAmp.setGain(c.volume);
-        plexiAmp.setTone(c.treble, c.bass, c.reverb);
+        // tone knobs shown Treble/Mid/Bass: slider4 (c.bass) -> mid, slider5 (c.reverb) -> bass
+        plexiAmp.setTone(c.treble, c.reverb, c.bass);
         plexiAmp.setPresence(c.tremSpeed);
         plexiAmp.setBright(c.tremIntensity);
         // Dual Rectifier control map: Volume->Gain, Treble/Bass direct, Reverb->Mid
         // (Marshall stack has a mid pot), TremSpeed->Master.
         rectiAmp.setGain(c.volume);
-        rectiAmp.setTone(c.treble, c.reverb, c.bass, 0.5 + 0.5 * c.tremSpeed);
+        // tone knobs shown Treble/Mid/Bass: slider4 (c.bass) -> mid, slider5 (c.reverb) -> bass
+        rectiAmp.setTone(c.treble, c.bass, c.reverb, 0.5 + 0.5 * c.tremSpeed);
         rectiAmp.setInScale(0.5 + 4.0 * c.tremIntensity);   // TremIntensity -> input Drive
         rectiAmp.setMode(c.rectoMode);                      // Raw / Vintage / Modern
         rectiAmp.setRectifier(c.rectType);                  // Diode / Spongy (sag)
         // Dumble SSS control map: Volume->Drive/push, Treble/Bass direct, Reverb->Mid,
         // TremSpeed->Volume, TremIntensity->Input.
         dumbleAmp.setDrive(c.volume);
-        dumbleAmp.setTone(c.treble, c.reverb, c.bass, 0.5 + 0.5 * c.tremSpeed);
+        // tone knobs shown Treble/Mid/Bass: slider4 (c.bass) -> mid, slider5 (c.reverb) -> bass
+        dumbleAmp.setTone(c.treble, c.bass, c.reverb, 0.5 + 0.5 * c.tremSpeed);
         dumbleAmp.setInScale(0.5 + 1.5 * c.tremIntensity);
         if (c.cabKind != ctl.cabKind) rebuildCab(c.cabKind);
         // gate + chorus + post-amp FX

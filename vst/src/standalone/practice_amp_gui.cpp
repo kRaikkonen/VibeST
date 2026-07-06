@@ -44,11 +44,11 @@ const Param kParams[32] = {
     {L"Drive", 0, 1, 0.5},        // 11: slot B drive
     {L"Tone", 0, 1, 0.5},         // 12: slot B tone
     {L"Level", 0, 1, 0.35},       // 13: slot B level
-    {L"Time ms", 20, 1000, 402},  // 14: delay time
-    {L"Feedbk", 0, 0.9, 0.351},   // 15: delay feedback
-    {L"E.Level", 0, 1.5, 0.6},    // 16: delay repeat level (Boss E.Level)
-    {L"Room", 0, 1, 0.25},        // 17: room mic amount
-    {L"Width", 0, 1, 0.8},        // 18: room mic width
+    {L"Time ms", 20, 1000, 294},  // 14: delay time (boot preset)
+    {L"Feedbk", 0, 0.9, 0.072},   // 15: delay feedback (boot preset)
+    {L"E.Level", 0, 1.5, 0.255},  // 16: delay repeat level (Boss E.Level)
+    {L"Room", 0, 1, 0.63},        // 17: room mic amount (boot preset)
+    {L"Width", 0, 1, 0.82},       // 18: room mic width (boot preset)
     {L"Thresh", 0, 1, 0.25},      // 19: noise gate threshold
     {L"Rate", 0, 1, 0.4},         // 20: chorus rate
     {L"Depth", 0, 1, 0.55},       // 21: chorus depth
@@ -68,13 +68,13 @@ constexpr int NP = 32;
 const wchar_t* kAmpLabels[4][6] = {
     {L"Volume", L"Treble", L"Bass", L"Reverb", L"Trem Speed",
      L"Trem Intensity"},
-    {L"Gain", L"Treble", L"Bass", L"Middle", L"Presence", L"High Treble"},
-    // Dual Rectifier — matches the engine's control map (Vol->Gain, Reverb->Mid,
-    // TremSpeed->Master, TremIntensity->Drive/input-push). Was falling back to
-    // Princeton's labels because relabelAmp clamped the amp index to 0..1.
-    {L"Gain", L"Treble", L"Bass", L"Mid", L"Master", L"Drive"},
-    // Dumble SSS (clean): Vol->Drive/push, Reverb->Mid, TremSpeed->Volume, TremInt->Input
-    {L"Drive", L"Treble", L"Bass", L"Mid", L"Volume", L"Input"},
+    {L"Gain", L"Treble", L"Middle", L"Bass", L"Presence", L"High Treble"},
+    // Dual Rectifier — Vol->Gain, TremSpeed->Master, TremInt->Drive/input-push.
+    // Tone knobs shown Treble/Mid/Bass (real amp order): slider4=Mid (fed by
+    // c.bass), slider5=Bass (fed by c.reverb) — see the setTone swap in apply().
+    {L"Gain", L"Treble", L"Mid", L"Bass", L"Master", L"Drive"},
+    // Dumble SSS (clean): Vol->Drive/push, TremSpeed->Volume, TremInt->Input
+    {L"Drive", L"Treble", L"Mid", L"Bass", L"Volume", L"Input"},
 };
 
 // ---- factory presets: set amp + pedals + knobs (raw slider positions; each amp
@@ -90,12 +90,17 @@ struct Preset {
 const Preset kPresets[] = {
     {L"— Presets —",     0,3,1,true, true,  0.5,0.5,0.5,0.3,0.5,0.0,0.030, 0.5,0.5,0.5,0.5,0.5,0.5},
     {L"Princeton Clean", 0,0,0,false,false, 0.4,0.6,0.5,0.3,0.0,0.0,0.045, 0.5,0.5,0.5,0.5,0.5,0.5},
-    {L"Plexi Crunch",    1,0,0,false,false, 0.7,0.6,0.4,0.6,0.5,0.5,0.030, 0.5,0.5,0.5,0.5,0.5,0.5},
-    {L"Recto Metal",     2,0,0,false,false, 0.8,0.4,0.4,0.9,0.4,0.3,0.024, 0.5,0.5,0.5,0.5,0.5,0.5},
-    {L"Dumble Clean",    3,0,0,false,false, 0.3,0.75,0.1,0.9,0.6,0.3,0.045,0.5,0.5,0.5,0.5,0.5,0.5},
-    {L"Klon → Dumble",   3,6,0,true, false, 0.35,0.75,0.1,0.9,0.6,0.3,0.040,0.6,0.6,0.7,0.5,0.5,0.5},
-    {L"TS+SD → Recto",   2,3,1,true, true,  0.75,0.4,0.4,0.85,0.4,0.3,0.024,0.5,0.5,0.55,0.5,0.5,0.52},
+    // Mid-amps (Plexi/Recto/Dumble): tone order is Treble/Mid/Bass, so the `bas`
+    // field now feeds slider4=Mid and `rev` feeds slider5=Bass (swapped vs before).
+    {L"Plexi Crunch",    1,0,0,false,false, 0.7,0.6,0.6,0.4,0.5,0.5,0.030, 0.5,0.5,0.5,0.5,0.5,0.5},
+    {L"Recto Metal",     2,0,0,false,false, 0.8,0.4,0.9,0.4,0.4,0.3,0.024, 0.5,0.5,0.5,0.5,0.5,0.5},
+    {L"Dumble Clean",    3,0,0,false,false, 0.3,0.75,0.9,0.1,0.6,0.3,0.045,0.5,0.5,0.5,0.5,0.5,0.5},
+    {L"Klon → Dumble",   3,6,0,true, false, 0.35,0.75,0.9,0.1,0.6,0.3,0.040,0.6,0.6,0.7,0.5,0.5,0.5},
+    {L"TS+SD → Recto",   2,3,1,true, true,  0.75,0.4,0.85,0.4,0.4,0.3,0.024,0.5,0.5,0.55,0.5,0.5,0.52},
+    // Boot default: Mad Professor Red + Boss SD-1 -> Mesa Dual Rectifier (Modern).
+    {L"Recto Metal Rig", 2,5,1,true, true,  0.80,0.75,0.56,0.51,0.59,0.30,0.04, 0.50,0.50,0.50,0.50,0.39,0.50},
 };
+constexpr int kBootPreset = sizeof(kPresets) / sizeof(kPresets[0]) - 1;   // "Recto Metal Rig"
 
 pa::Engine* gEngine = nullptr;
 ma_context gCtx;
@@ -558,7 +563,7 @@ void buildUi(HWND hwnd) {
     gPreset = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST, 626, 9, 250, 300, IDC_PRESET);
     for (const auto& pr : kPresets)
         SendMessageW(gPreset, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(pr.name));
-    SendMessageW(gPreset, CB_SETCURSEL, 0, 0);
+    SendMessageW(gPreset, CB_SETCURSEL, kBootPreset, 0);   // show the boot preset
     mk(hwnd, L"STATIC", L"Recto Mode (Dual Rect only):", SS_LEFT, 452, 44, 200, 16, 0);
     gRectoMode = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST, 656, 41, 220, 120, IDC_RECTOMODE);
     for (auto* n : {L"Raw", L"Vintage", L"Modern"})
@@ -692,8 +697,7 @@ LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_CREATE:
             buildUi(hwnd);
-            relabelAmp();
-            applyControls();          // push the default preset to the engine
+            applyPreset(kBootPreset);   // boot into "Recto Metal Rig" (relabels + applies)
             SetTimer(hwnd, 1, 1000, nullptr);
             SetTimer(hwnd, 2, 55, nullptr);   // fast output-meter refresh
             return 0;
