@@ -411,7 +411,7 @@ void buildUi(HWND hwnd) {
         swprintf(t, 8, L"%d", b);
         SendMessageW(gBufCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(t));
     }
-    SendMessageW(gBufCombo, CB_SETCURSEL, 1, 0);   // default 128
+    SendMessageW(gBufCombo, CB_SETCURSEL, 2, 0);   // default 256 (overrun headroom)
     gStartBtn = mk(hwnd, L"BUTTON", L"Start", BS_PUSHBUTTON,
                    232, 102, 90, 26, IDC_START);
     mk(hwnd, L"BUTTON", L"Load Cab IR...", BS_PUSHBUTTON,

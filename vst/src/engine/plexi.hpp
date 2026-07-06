@@ -129,6 +129,10 @@ public:
     void setPresence(double p) {
         presence_ = std::clamp(p, 0.0, 1.0);
         double fc = 6000.0 * std::pow(900.0 / 6000.0, presence_);   // 6k..0.9k
+        // At 48 kHz (Eco) the 1-sample NFB delay makes a high feedback cutoff
+        // self-oscillate (~7 kHz squeal) for low presence; cap the corner so the
+        // loop stays stable. 96 kHz (oversampled) is unaffected.
+        if (fs_ < 72000.0 && fc > 2000.0) fc = 2000.0;
         double wc = 2.0 * princeton::kPi * fc;
         fbA_ = wc / (fs_ + wc);
     }

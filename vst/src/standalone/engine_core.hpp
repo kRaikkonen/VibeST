@@ -430,6 +430,13 @@ struct Engine {
             if (ctl.eqOn) { L = eq_.step(0, L); R = eq_.step(1, R); }
             L = ceil(L * ctl.master);
             R = ceil(R * ctl.master);
+            // Final safety net for the driver: never hand ASIO a NaN/Inf or an
+            // out-of-range sample (a runaway stage would otherwise trip the host
+            // with "ASIO clock overflowed"). Hard-clamp to [-1, 1].
+            if (!std::isfinite(L)) L = 0.0;
+            if (!std::isfinite(R)) R = 0.0;
+            L = L < -1.0 ? -1.0 : (L > 1.0 ? 1.0 : L);
+            R = R < -1.0 ? -1.0 : (R > 1.0 ? 1.0 : R);
             outL[i] = static_cast<float>(L);
             outR[i] = static_cast<float>(R);
             opk = std::max(opk, static_cast<float>(std::fabs(0.5 * (L + R))));

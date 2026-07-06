@@ -919,7 +919,13 @@ public:
         // the explicit loop needs no implicit solve because it does not
         // actually oscillate — a per-sample implicit solve would cost 2-3x
         // for no benefit any measurement can find.
-        setFbCutoff(8000.0);
+        // Rate-aware NFB cutoff. The loop has a 1-sample delay; at 48 kHz (Eco)
+        // that delay is twice the phase at a given frequency, so an 8 kHz cutoff
+        // that is stable at 96 kHz SELF-OSCILLATES near ~13 kHz at 48 kHz (a loud
+        // HF squeal). Roll the loop off harder at the lower rate: 3 kHz is well
+        // clear of instability (verified: burst tail decays for input up to
+        // realistic drive), 8 kHz stays for the oversampled 96 kHz path.
+        setFbCutoff(fs_ >= 72000.0 ? 8000.0 : 3000.0);
         // grid conduction / blocking on the stages that actually get slammed:
         // V1A (input, hit hardest by the front pedals) and V3B (post-reverb
         // recovery driving the PI). ~real 12AX7 grid-leak / coupling values.
