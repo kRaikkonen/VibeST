@@ -412,6 +412,25 @@ struct Engine {
                     cabPres.step(cabBump.step(cabHp.step(y48[i])))));
         }
 
+        // ---- per-amp recording-chain makeup (mic-preamp gain) ---------------
+        // The NAM fits pin each amp's frequency SHAPE (level-normalized), so the
+        // absolute output scale of each model was an arbitrary fit leftover ->
+        // an 18 dB spread between amps at their factory presets (Plexi clipped
+        // the output bus at master 1.2/10 while Princeton couldn't reach it at
+        // 10/10). A studio fixes this with per-amp mic-preamp gain; this is that
+        // stage, explicit and measured — the circuit models are untouched.
+        // Measured 2026-07-10 (0.1 x 196 Hz DI, inTrim .29, GB412 cab):
+        // pre-master RMS  Princeton 2.74 | Plexi 21.97 | Recto 8.62 | Dumble 11.31
+        // -> normalized to a common 9.0 (their geometric middle).
+        // (With a user-loaded cab IR the calibration is approximate — cab IRs
+        // carry their own level — but the amp-to-amp spread stays fixed.)
+        {
+            static constexpr double kAmpMakeup[4] = {
+                9.0 / 2.74, 9.0 / 21.97, 9.0 / 8.62, 9.0 / 11.31};
+            int ak = (ctl.ampKind < 0 || ctl.ampKind > 3) ? 0 : ctl.ampKind;
+            for (int i = 0; i < kChunk48; ++i) y48[i] *= kAmpMakeup[ak];
+        }
+
         // ---- stereo room mic -> graphic EQ -> soft ceiling -> stereo out ---
         // Soft ceiling: below 0.95 exactly linear (approved tone untouched);
         // above it saturates smoothly to 1.0 so overs are graceful not harsh.

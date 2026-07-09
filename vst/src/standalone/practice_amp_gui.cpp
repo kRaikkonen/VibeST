@@ -43,7 +43,7 @@ const Param kParams[32] = {
     {L"Volume", 0, 1, 0.83},      {L"Treble", 0, 1, 0.63},
     {L"Bass", 0, 1, 0.43},        {L"Reverb", 0, 1, 0.15},
     {L"Trem Speed", 0, 1, 0.45},  {L"Trem Intensity", 0, 1, 0.0},
-    {L"Input Trim", 0, 1.0, 0.29},{L"Master", 0, 0.2, 0.012},
+    {L"Input Trim", 0, 1.0, 0.29},{L"Master", 0, 0.2, 0.088},
     {L"Tone", 0, 1, 0.5},         // 10: slot A tone
     {L"Drive", 0, 1, 0.5},        // 11: slot B drive
     {L"Tone", 0, 1, 0.5},         // 12: slot B tone
@@ -87,22 +87,23 @@ struct Preset {
     const wchar_t* name; int amp, pa, pb; bool aOn, bOn;
     double vol, treb, bas, rev, tspd, tint, mstr, ad, at, al, bd, bt, bl;
 };
-// NOTE: the `mstr` field is a real Master value (slider range 0..0.2), NOT a 0..1
-// fraction. Earlier presets used 0.5-0.7 here, which setSlider clamped to 0.2 (max)
-// -> every preset pinned Master to full = ear-splitting on high-gain amps. Values
-// below are safe listening levels: clean amps a touch louder, high-gain lower.
+// NOTE: the `mstr` field is a Master SLIDER value (0..0.2 position scale; the
+// audio taper in applyControls squares it into the actual gain). Since v0.1.4
+// the amps are level-calibrated to a common reference (see engine kAmpMakeup),
+// so one uniform master position now means one loudness on every amp: 0.088
+// (UI 4.4) reproduces the boot-rig listening level everywhere.
 const Preset kPresets[] = {
-    {L"— Presets —",     0,3,1,true, true,  0.5,0.5,0.5,0.3,0.5,0.0,0.030, 0.5,0.5,0.5,0.5,0.5,0.5},
-    {L"Princeton Clean", 0,0,0,false,false, 0.4,0.6,0.5,0.3,0.0,0.0,0.045, 0.5,0.5,0.5,0.5,0.5,0.5},
+    {L"— Presets —",     0,3,1,true, true,  0.5,0.5,0.5,0.3,0.5,0.0,0.088, 0.5,0.5,0.5,0.5,0.5,0.5},
+    {L"Princeton Clean", 0,0,0,false,false, 0.4,0.6,0.5,0.3,0.0,0.0,0.088, 0.5,0.5,0.5,0.5,0.5,0.5},
     // Mid-amps (Plexi/Recto/Dumble): tone order is Treble/Mid/Bass, so the `bas`
     // field now feeds slider4=Mid and `rev` feeds slider5=Bass (swapped vs before).
-    {L"Plexi Crunch",    1,0,0,false,false, 0.7,0.6,0.6,0.4,0.5,0.5,0.030, 0.5,0.5,0.5,0.5,0.5,0.5},
-    {L"Recto Metal",     2,0,0,false,false, 0.8,0.4,0.9,0.4,0.4,0.3,0.024, 0.5,0.5,0.5,0.5,0.5,0.5},
-    {L"Dumble Clean",    3,0,0,false,false, 0.3,0.75,0.9,0.1,0.6,0.3,0.045,0.5,0.5,0.5,0.5,0.5,0.5},
-    {L"Klon → Dumble",   3,6,0,true, false, 0.35,0.75,0.9,0.1,0.6,0.3,0.040,0.6,0.6,0.7,0.5,0.5,0.5},
-    {L"TS+SD → Recto",   2,3,1,true, true,  0.75,0.4,0.85,0.4,0.4,0.3,0.024,0.5,0.5,0.55,0.5,0.5,0.52},
+    {L"Plexi Crunch",    1,0,0,false,false, 0.7,0.6,0.6,0.4,0.5,0.5,0.088, 0.5,0.5,0.5,0.5,0.5,0.5},
+    {L"Recto Metal",     2,0,0,false,false, 0.8,0.4,0.9,0.4,0.4,0.3,0.088, 0.5,0.5,0.5,0.5,0.5,0.5},
+    {L"Dumble Clean",    3,0,0,false,false, 0.3,0.75,0.9,0.1,0.6,0.3,0.088,0.5,0.5,0.5,0.5,0.5,0.5},
+    {L"Klon → Dumble",   3,6,0,true, false, 0.35,0.75,0.9,0.1,0.6,0.3,0.088,0.6,0.6,0.7,0.5,0.5,0.5},
+    {L"TS+SD → Recto",   2,3,1,true, true,  0.75,0.4,0.85,0.4,0.4,0.3,0.088,0.5,0.5,0.55,0.5,0.5,0.52},
     // Boot default: Mad Professor Red + Boss SD-1 -> Mesa Dual Rectifier (Modern).
-    {L"Recto Metal Rig", 2,5,1,true, true,  0.80,0.75,0.56,0.51,0.59,0.30,0.04, 0.50,0.50,0.50,0.50,0.39,0.50},
+    {L"Recto Metal Rig", 2,5,1,true, true,  0.80,0.75,0.56,0.51,0.59,0.30,0.088, 0.50,0.50,0.50,0.50,0.39,0.50},
 };
 constexpr int kBootPreset = sizeof(kPresets) / sizeof(kPresets[0]) - 1;   // "Recto Metal Rig"
 
@@ -190,7 +191,12 @@ void applyControls() {
     c.tremSpeed = sliderValue(6);
     c.tremIntensity = sliderValue(7);
     c.inTrim = sliderValue(8);
-    c.master = sliderValue(9);
+    {   // Master: audio (square-law) taper, like a real volume pot. The raw
+        // linear 0..0.2 mapping crammed all useful travel into the first two
+        // ticks on hot amps; squaring the position spreads loudness evenly.
+        double mp = sliderValue(9) / 0.2;          // 0..1 position
+        c.master = 0.2 * mp * mp;                  // same 0.2 max as before
+    }
     c.aTone = sliderValue(10);
     c.bDrive = sliderValue(11);
     c.bTone = sliderValue(12);
