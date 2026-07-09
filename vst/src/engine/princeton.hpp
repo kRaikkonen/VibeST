@@ -508,10 +508,14 @@ private:
 
 class PowerStage {
 public:
+    // vgStart: initial guess for the idle-bias Newton solve. -34 suits the 6V6
+    // at 400 V; a high-gm tube at a lower rail (EL84 quad, mu 21 at 310 V) is in
+    // deep cutoff there — near-zero gradient made the solve diverge. Pass a
+    // guess near the expected bias for such tubes.
     explicit PowerStage(double fs, double Raa = 8000.0, double Lm = 45.0,
                         double mHalf = 15.8, double idleMa = 30.0,
                         Pentode tube = P6V6(), double vbSup = 400.0,
-                        double vpSup = 410.0)
+                        double vpSup = 410.0, double vgStart = -34.0)
         : tube_(tube), T_(1.0 / fs), Lm_(Lm), m_(mHalf),
           vbSup_(vbSup), vpSup_(vpSup) {
         (void)Raa;
@@ -524,14 +528,17 @@ public:
                           {0.0, -1.0, 2 * Lces / T_}};
         invert3(A, Ainv_);
         geq_ = Ainv_[0][0];
-        // bias calibration to idle current
-        double vg = -34.0;
+        // bias calibration to idle current (Newton, step-clamped so a flat
+        // cutoff-region gradient can't launch the guess to infinity)
+        double vg = vgStart;
         for (int it = 0; it < 200; ++it) {
             double ip, ig, ip2, ig2;
             tube_.currents(vg, vbSup_, vpSup_, ip, ig);
             double f = ip - idleMa * 1e-3;
             tube_.currents(vg + 1e-4, vbSup_, vpSup_, ip2, ig2);
-            vg -= f / ((ip2 - ip) / 1e-4);
+            double d = (ip2 - ip) / 1e-4;
+            if (std::fabs(d) < 1e-12) break;
+            vg -= std::clamp(f / d, -5.0, 5.0);
         }
         vbias_ = vg;
         iPlates_ = 2 * idleMa * 1e-3;

@@ -25,6 +25,7 @@
 #include "../engine/plexi.hpp"
 #include "../engine/rectifier.hpp"
 #include "../engine/dumble.hpp"
+#include "../engine/ac30.hpp"
 #include "../engine/dsp.hpp"
 #include "../engine/fx.hpp"
 
@@ -164,6 +165,7 @@ struct Engine {
           plexiAmp(eco_ ? 48000.0 : 96000.0, 0.6, 0.6, 0.4, 0.5, 1.0),
           rectiAmp(eco_ ? 48000.0 : 96000.0, 0.5, 0.4, 0.9, 0.3, 0.7),
           dumbleAmp(eco_ ? 48000.0 : 96000.0, 0.3, 0.75, 0.9, 0.1, 0.7),
+          ac30Amp(eco_ ? 48000.0 : 96000.0, 0.4, 0.6, 0.3, 0.5),
           amp(eco_ ? 48000.0 : 96000.0, princeton::AmpControls{},
               makeTank()) {
         if (!tankIr.empty()) conv.init(tankIr, ampChunk);
@@ -259,6 +261,13 @@ struct Engine {
         dumbleAmp.setDrive(c.volume);
         // tone knobs shown Treble/Mid/Bass: slider4 (c.bass) -> mid, slider5 (c.reverb) -> bass
         dumbleAmp.setTone(c.treble, c.bass, c.reverb, 0.5 + 0.5 * c.tremSpeed);
+        // AC30: Volume/Treble/Cut/Bass/Master/Input — slider4 (c.bass) = Cut,
+        // slider5 (c.reverb) = Bass, TremSpeed = Master trim, TremIntensity = Input
+        ac30Amp.setGain(c.volume);
+        ac30Amp.setTone(c.treble, c.reverb);
+        ac30Amp.setCut(c.bass);
+        ac30Amp.setMaster(c.tremSpeed);
+        ac30Amp.setInScale(0.5 + 1.5 * c.tremIntensity);
         dumbleAmp.setInScale(0.5 + 1.5 * c.tremIntensity);
         if (c.cabKind != ctl.cabKind) rebuildCab(c.cabKind);
         // gate + chorus + post-amp FX
@@ -378,6 +387,8 @@ struct Engine {
             rectiAmp.processBlock(ampIn, ampOut, ampN);
         else if (ctl.ampKind == 3)
             dumbleAmp.processBlock(ampIn, ampOut, ampN);
+        else if (ctl.ampKind == 4)
+            ac30Amp.processBlock(ampIn, ampOut, ampN);
         else
             plexiAmp.processBlock(ampIn, ampOut, ampN);
         if (ampN == kChunk96) ampDn.process(y96, y48, kChunk48);
@@ -425,9 +436,9 @@ struct Engine {
         // (With a user-loaded cab IR the calibration is approximate — cab IRs
         // carry their own level — but the amp-to-amp spread stays fixed.)
         {
-            static constexpr double kAmpMakeup[4] = {
-                9.0 / 2.74, 9.0 / 21.97, 9.0 / 8.62, 9.0 / 11.31};
-            int ak = (ctl.ampKind < 0 || ctl.ampKind > 3) ? 0 : ctl.ampKind;
+            static constexpr double kAmpMakeup[5] = {
+                9.0 / 2.74, 9.0 / 21.97, 9.0 / 8.62, 9.0 / 11.31, 9.0 / 30.16};
+            int ak = (ctl.ampKind < 0 || ctl.ampKind > 4) ? 0 : ctl.ampKind;
             for (int i = 0; i < kChunk48; ++i) y48[i] *= kAmpMakeup[ak];
         }
 
@@ -474,6 +485,7 @@ struct Engine {
     plexi::Amp plexiAmp;           // Marshall Super Lead Plexi
     recti::Rectifier rectiAmp;     // Mesa Dual Rectifier (Rhythm/Orange)
     dumble::Dumble dumbleAmp;      // Dumble Steel String Singer (clean)
+    ac30::AC30 ac30Amp;            // Vox AC30 Top Boost (EL84 quad, no NFB)
     dsp::PartConv conv, cabConv;
     bool tankBypass = false;
     bool useCabIr = false;

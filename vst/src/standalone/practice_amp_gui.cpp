@@ -16,7 +16,7 @@
 namespace {
 
 // App title / version. Bump the last number on every feature update.
-constexpr const wchar_t* kAppTitle = L"VibeST Practice AMP  v0.1.3  by kRaikkonen";
+constexpr const wchar_t* kAppTitle = L"VibeST Practice AMP  v0.1.4  by kRaikkonen";
 constexpr int IDI_APPICON = 101;   // matches app.rc
 
 constexpr int IDC_IN = 100, IDC_OUT = 101, IDC_EXCL = 102, IDC_START = 103,
@@ -69,7 +69,7 @@ const Param kParams[32] = {
 };
 constexpr int NP = 32;
 // amp-dependent labels for sliders 2..7
-const wchar_t* kAmpLabels[4][6] = {
+const wchar_t* kAmpLabels[5][6] = {
     {L"Volume", L"Treble", L"Bass", L"Reverb", L"Trem Speed",
      L"Trem Intensity"},
     {L"Gain", L"Treble", L"Middle", L"Bass", L"Presence", L"High Treble"},
@@ -79,6 +79,8 @@ const wchar_t* kAmpLabels[4][6] = {
     {L"Gain", L"Treble", L"Mid", L"Bass", L"Master", L"Drive"},
     // Dumble SSS (clean): Vol->Drive/push, TremSpeed->Volume, TremInt->Input
     {L"Drive", L"Treble", L"Mid", L"Bass", L"Volume", L"Input"},
+    // Vox AC30 Top Boost: slider4 (c.bass) = Cut, slider5 (c.reverb) = Bass
+    {L"Volume", L"Treble", L"Cut", L"Bass", L"Master", L"Input"},
 };
 
 // ---- factory presets: set amp + pedals + knobs (raw slider positions; each amp
@@ -100,9 +102,13 @@ const Preset kPresets[] = {
     {L"Plexi Crunch",    1,0,0,false,false, 0.7,0.6,0.6,0.4,0.5,0.5,0.088, 0.5,0.5,0.5,0.5,0.5,0.5},
     {L"Recto Metal",     2,0,0,false,false, 0.8,0.4,0.9,0.4,0.4,0.3,0.088, 0.5,0.5,0.5,0.5,0.5,0.5},
     {L"Dumble Clean",    3,0,0,false,false, 0.3,0.75,0.9,0.1,0.6,0.3,0.088,0.5,0.5,0.5,0.5,0.5,0.5},
-    // Klon level 0.2: the rebuilt Klon is a real boost now (+11 dB there); the old
-    // 0.7 was tuned against the broken quiet model and slams the ceiling.
-    {L"Klon → Dumble",   3,6,0,true, false, 0.35,0.75,0.9,0.1,0.6,0.3,0.088,0.6,0.6,0.2,0.5,0.5,0.5},
+    // AC30: vol/treble/CUT(slider4)/BASS(slider5)/master/input — keep at kPresets
+    // index amp+1 (=5) so loadAmpPreset() finds it on amp switch.
+    {L"AC30 Chime",      4,0,0,false,false, 0.4,0.6,0.3,0.5,0.5,0.3,0.088, 0.5,0.5,0.5,0.5,0.5,0.5},
+    // Klon level 0.2 / master 0.033: the rebuilt Klon is a real +11 dB boost; the
+    // master compensates so this preset matches the others' loudness (measured
+    // 0.355 rms / 0.62 peak) while the Dumble still gets the push.
+    {L"Klon → Dumble",   3,6,0,true, false, 0.35,0.75,0.9,0.1,0.6,0.3,0.033,0.6,0.6,0.2,0.5,0.5,0.5},
     {L"TS+SD → Recto",   2,3,1,true, true,  0.75,0.4,0.85,0.4,0.4,0.3,0.088,0.5,0.5,0.55,0.5,0.5,0.52},
     // Boot default: Mad Professor Red + Boss SD-1 -> Mesa Dual Rectifier (Modern).
     {L"Recto Metal Rig", 2,5,1,true, true,  0.80,0.75,0.56,0.51,0.59,0.30,0.088, 0.50,0.50,0.50,0.50,0.39,0.50},
@@ -557,7 +563,8 @@ void buildUi(HWND hwnd) {
     gAmpKind = mk(hwnd, L"COMBOBOX", nullptr, CBS_DROPDOWNLIST,
                   22, 722, 250, 160, IDC_AMP);
     for (auto* n : {L"Fender Princeton Reverb", L"Marshall Super Lead Plexi",
-                    L"Mesa Dual Rectifier", L"Dumble Steel String Singer"})
+                    L"Mesa Dual Rectifier", L"Dumble Steel String Singer",
+                    L"Vox AC30 Top Boost  (schematic)"})
         SendMessageW(gAmpKind, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(n));
     SendMessageW(gAmpKind, CB_SETCURSEL, 0, 0);
     for (int i = 2; i <= 7; ++i)
@@ -673,7 +680,7 @@ void buildUi(HWND hwnd) {
 
 void relabelAmp() {
     int a = static_cast<int>(SendMessageW(gAmpKind, CB_GETCURSEL, 0, 0));
-    if (a < 0 || a > 3) a = 0;
+    if (a < 0 || a > 4) a = 0;
     for (int i = 2; i <= 7; ++i)
         SetWindowTextW(gParamLbl[i], kAmpLabels[a][i - 2]);
 }

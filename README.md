@@ -53,9 +53,12 @@ spectrum, THD vs. level).
 | Speaker cabinet | Impulse-response convolution |
 
 ### Features
-**Amplifiers (4):** Fender Princeton Reverb (matched to 0.27 dB vs NAM), Marshall Super Lead Plexi,
+**Amplifiers (5):** Fender Princeton Reverb (matched to 0.27 dB vs NAM), Marshall Super Lead Plexi,
 Mesa Dual Rectifier (with Raw/Vintage/Modern voicing and Diode/Spongy rectifier sag; 1.7 dB),
-Dumble Steel String Singer (1.37 dB).
+Dumble Steel String Singer (1.37 dB), Vox AC30 Top Boost (from the original JMI OS/065 + OS/010
+drawings: EL84 quad, cathode bias with dynamic bias "bloom", no negative feedback, real Cut
+control; schematic-accurate, awaiting a capture for instrument validation). All five amps are
+level-calibrated to a common reference, so switching amps keeps the same loudness.
 
 **Pedals (8, two stackable slots A → B):** Boss OD-1, Boss SD-1 *(white-box + hybrid)*, Ibanez
 TS-808 *(white-box + hybrid)*, Mad Professor Red, Klon Centaur, Marshall Bluesbreaker.
@@ -101,9 +104,11 @@ WASAPI。非线性级过采样防混叠;每个模型都对照真机的 **NAM(Neu
 | 喇叭箱体 | 脉冲响应(IR)卷积 |
 
 ### 功能
-**音箱(4):** Fender Princeton Reverb(对 NAM 匹配到 0.27 dB)、Marshall Super Lead Plexi、
+**音箱(5):** Fender Princeton Reverb(对 NAM 匹配到 0.27 dB)、Marshall Super Lead Plexi、
 Mesa Dual Rectifier(带 Raw/Vintage/Modern 音色档 + Diode/Spongy 整流 sag;1.7 dB)、
-Dumble Steel String Singer(1.37 dB)。
+Dumble Steel String Singer(1.37 dB)、Vox AC30 Top Boost(按 JMI 原厂图 OS/065 + OS/010 搭建:
+EL84 四管、阴极偏置动态"bloom"压缩、无负反馈、真 Cut 控制;电路级准确,待有采集后做仪器验证)。
+五台 amp 已做统一电平校准,切换 amp 响度一致。
 
 **踏板(8 个,两个可叠加插槽 A → B):** Boss OD-1、Boss SD-1 *(白盒 + hybrid)*、Ibanez TS-808
 *(白盒 + hybrid)*、Mad Professor Red、Klon Centaur、Marshall Bluesbreaker。标 "white-box" 的经过
