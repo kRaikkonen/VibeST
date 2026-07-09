@@ -123,47 +123,152 @@ private:
     double b0_, a1_, x1_ = 0, lp1_ = 0, tone_ = 0.5;
 };
 
-// ---- Klon Centaur: transparent germanium-feedback overdrive ------------------
-// Schematic-first (Aion/ElectroSmash, 铁律一): IC1B non-inverting gain
-// A = 1 + 422k/lower, lower = 15k+2k+(1-drive)*100k -> A 4.6..25.8x. Two 1N34A Ge
-// diodes anti-parallel across the feedback clip only the EXCESS (A-1)*vin toward the
-// ~0.35V germanium knee; vin passes straight through -> transparent. Active tilt Treble.
+// ---- Klon Centaur: full real topology (Aion Refractor parts list + Chowdhury
+// KlonCentaur repo, values double-sourced; 铁律一) --------------------------------
+//   in (IC1A buffer, unity)
+//     ├─ DIRTY: IC1B non-inv gain (R10 2k + gang1(1-g)*100k + R11 15k||C7 82n lower
+//     │         leg, R12 422k||C8 390p feedback; +13dB..+40dB) -> R13 1k ->
+//     │         2x1N34A Ge SHUNT clipper (Newton) -> C10 1u -> R16 47k -> IC2A
+//     ├─ FF1 (clean bass restore): R7 1.5k -> C16 1u shunt -> R19 15k -> IC2A
+//     └─ FF2 (gain-faded clean mids): R5 5.1k||C4 68n -> R8 1.5k / C6+R9 shunts ->
+//               gang2 fade -> R17 27k||(C12 27n+R18 12k) -> C11 2.2n+R15 22k -> J
+//   IC2A inverting sum, feedback R20 392k||C13 820p (495 Hz lid)
+//   -> IC2B tone (R22/R24 100k, R21 1.8k, R23 4.7k, Treble 10kB, C14 3.9n; exact MNA)
+//   -> C15 4.7u -> 560R -> Output pot 10kB (linear)
+// FF2 + the C10/R16 join at node J are solved EXACTLY as two passive MNA networks
+// (superposition: the network is linear; each source solved with the other shorted;
+// the IC2A virtual ground is a 1R sense node whose voltage reads the sum current).
 class KlonStage {
 public:
-    explicit KlonStage(double fs = 48000.0) : fs_(fs) { setGain(0.5); setTreble(0.5); }
+    explicit KlonStage(double fs = 48000.0) : fs_(fs) {
+        // IC2A feedback lid: Zf = R20||C13 applied to the summed current
+        // (transimpedance: volts out per amp in -> the R20 factor is the gain).
+        double w = 1.0 / (R20 * C13), k = 2.0 * fs_;
+        fA_ = (w - k) / (k + w); fB_ = R20 * w / (k + w);
+        // output high-pass C15 into (560R + 10k pot)
+        double wo = 1.0 / (C15 * (560.0 + 10e3));
+        oB_ = k / (k + wo); oA_ = (wo - k) / (k + wo);
+        setGain(0.5); setTreble(0.5); setLevel(0.5);
+    }
     void setGain(double g) {
         g = std::clamp(g, 0.0, 0.999);
-        lower_ = 15e3 + 2e3 + (1.0 - g) * 100e3;         // R11+R10+GAIN(100k) feedback lower leg
+        if (g == g_ && built_) return;      // guard: rebuild only on a real change
+        g_ = g;
+        // IC1B lower leg: i = vin/Zl, Zl = Ra + R11||C7 (1-zero-1-pole, bilinear)
+        double Ra = 2e3 + (1.0 - g_) * 100e3;              // R10 + gang1
+        double t7 = R11 * C7, k = 2.0 * fs_;
+        double d = (Ra + R11) + Ra * t7 * k;
+        lB0_ = (1.0 + t7 * k) / d; lB1_ = (1.0 - t7 * k) / d;
+        lA1_ = ((Ra + R11) - Ra * t7 * k) / d;
+        // feedback Zf = R12||C8 one-pole on the leg current
+        double w8 = 1.0 / (R12 * C8);
+        gA_ = (w8 - k) / (k + w8); gB_ = R12 * w8 / (k + w8);
+        rebuild();
     }
     void setTreble(double t) {
-        double wc = 2.0 * kPi * 1600.0, k = 2.0 * fs_;   // tilt pivot ~1.6 kHz
-        b0_ = wc / (k + wc); a1_ = (wc - k) / (k + wc);
-        tilt_ = (t - 0.5) * 2.0;                          // -1 dark .. +1 bright
+        t = std::clamp(t, 0.0, 0.999);
+        if (t == treble_ && built_) return;
+        treble_ = t; rebuild();
     }
-    // IC1B non-inverting stage, TWO 1N34A germanium diodes anti-parallel across R12.
-    // Op-amp holds v- = vin; KCL at v-: vd/R12 + 2*Is*sinh(vd/nVT) = vin/lower, vd = vo-vin.
-    // Newton for vd; vo = vin + vd -> clean vin passes through (transparent) + soft Ge clip.
+    void setLevel(double l) { level_ = std::clamp(l, 0.0, 1.0); }
     double step(double x) {
-        double vin = x * 0.6;
-        double drive = vin / lower_;
-        double vd = vd_;
-        for (int k = 0; k < 40; ++k) {
-            double a = std::clamp(vd / NVT, -60.0, 60.0);
-            double id = IS * (std::exp(a) - std::exp(-a));       // 2*Is*sinh (anti-parallel Ge)
-            double dv = (vd / R12 + id - drive)
-                        / (1.0 / R12 + IS * (std::exp(a) + std::exp(-a)) / NVT);
-            vd -= dv;
-            if (std::fabs(dv) < 1e-11) break;
+        // IC1B: leg current (1z1p) -> Zf one-pole -> vo = vin + vf (non-inverting)
+        double i = lB0_ * x + lB1_ * lX1_ - lA1_ * lY1_; lX1_ = x; lY1_ = i;
+        double vf = gB_ * (i + gX1_) - gA_ * gY1_; gX1_ = i; gY1_ = vf;
+        double v1b = x + vf;
+        // R13 1k -> 2x1N34A Ge anti-parallel shunt (Newton, warm start)
+        double v = vc_;
+        for (int it = 0; it < 40; ++it) {
+            double a = std::clamp(v / NVT, -60.0, 60.0);
+            double id = IS * (std::exp(a) - std::exp(-a));
+            double dv = ((v - v1b) / R13 + id)
+                        / (1.0 / R13 + IS * (std::exp(a) + std::exp(-a)) / NVT);
+            v -= dv;
+            if (std::fabs(dv) < 1e-12) break;
         }
-        vd_ = vd;
-        double vo = vin + vd;
-        double lp = b0_ * (vo + x1_) - a1_ * y1_;
-        x1_ = vo; y1_ = lp;
-        return lp + (1.0 + tilt_) * (vo - lp);            // active tilt treble
+        vc_ = v;
+        // IC2A: exact passive-network currents into the virtual ground (1R sense)
+        double iD = netD_.step(v);        // dirty: C10 -> J (FF2 loading) -> R16
+        double iC = netC_.step(x);        // clean: FF1 + FF2 -> J -> R16
+        double isum = iD + iC;
+        double vs = fB_ * (isum + fX1_) - fA_ * fY1_;      // x R20||C13 (inverting)
+        fX1_ = isum; fY1_ = vs; vs = -vs;
+        double vt = tone_.step(vs);                         // IC2B (exact op-amp MNA)
+        double hp = oB_ * (vt - oX1_) - oA_ * oY1_;        // C15 high-pass
+        oX1_ = vt; oY1_ = hp;
+        return hp * (10e3 / 10.56e3) * level_;             // 560R + 10kB divider
     }
 private:
-    static constexpr double R12 = 422e3, IS = 2e-6, NVT = 1.3 * 0.02585;   // 1N34A
-    double fs_, lower_ = 57e3, tilt_ = 0.0, b0_ = 1.0, a1_ = 0.0, x1_ = 0.0, y1_ = 0.0, vd_ = 0.0;
+    void rebuild() {
+        built_ = true;
+        // FF2 network + the J junction, solved exactly (passive MNA, 1R sense node).
+        // nodes: 1 src | 2 after R5||C4 | 3 C6/R9 midpoint | 4 gang2 tap |
+        //        5 after R17||(C12+R18) | 6 C12/R18 midpoint | 7 after C11 |
+        //        8 = J | 9 = virtual-ground sense (1R)
+        auto ff2 = [&](pedal::MnaTone& n) {
+            n.R(1, 2, 5.1e3); n.Cap(1, 2, 68e-9);            // R5 || C4
+            n.R(2, 0, 1.5e3);                                 // R8
+            n.Cap(2, 3, 390e-9); n.R(3, 0, 1e3);              // C6 + R9
+            n.R(2, 4, std::max(g_, 1e-3) * 100e3);            // gang2 series (fades clean OUT as g rises)
+            n.R(4, 0, std::max(1.0 - g_, 1e-3) * 100e3);      // gang2 shunt
+            n.R(4, 5, 27e3);                                  // R17
+            n.Cap(4, 6, 27e-9); n.R(6, 5, 12e3);              // C12 + R18
+            n.Cap(5, 7, 2.2e-9); n.R(7, 8, 22e3);             // C11 + R15 -> J
+        };
+        {   // clean net: src drives FF1 + FF2; dirty source (via C10) shorted at J
+            pedal::MnaTone n(10, fs_); n.Vsrc(1);
+            ff2(n);
+            n.R(1, 10, 1.5e3); n.Cap(10, 0, 1e-6);            // FF1: R7 -> C16 shunt
+            n.R(10, 9, 15e3);                                 // R19 -> virtual ground
+            n.Cap(8, 0, 1e-6);                                // C10 to shorted dirty src
+            n.R(8, 9, 47e3);                                  // R16 J -> virtual ground
+            n.R(9, 0, 1.0);                                   // 1R sense: V(9) = i_sum
+            n.compile(9); netC_ = n;
+        }
+        {   // dirty net: src -> C10 -> J; FF2+FF1 hang off with their source shorted
+            pedal::MnaTone n(10, fs_); n.Vsrc(1);
+            // FF2 with node1 = shorted clean source -> its elements go to ground:
+            n.R(0, 2, 5.1e3); n.Cap(0, 2, 68e-9);
+            n.R(2, 0, 1.5e3);
+            n.Cap(2, 3, 390e-9); n.R(3, 0, 1e3);
+            n.R(2, 4, std::max(g_, 1e-3) * 100e3);
+            n.R(4, 0, std::max(1.0 - g_, 1e-3) * 100e3);
+            n.R(4, 5, 27e3);
+            n.Cap(4, 6, 27e-9); n.R(6, 5, 12e3);
+            n.Cap(5, 7, 2.2e-9); n.R(7, 8, 22e3);
+            n.Cap(1, 8, 1e-6);                                // C10 from the clipper
+            n.R(8, 9, 47e3);                                  // R16
+            n.R(0, 10, 1.5e3); n.Cap(10, 0, 1e-6); n.R(10, 9, 15e3);   // FF1, src shorted
+            n.R(9, 0, 1.0);                                   // 1R sense
+            n.compile(9); netD_ = n;
+        }
+        {   // IC2B tone: exact MNA with the op-amp primitive.
+            // nodes: 1 src | 2 inv in | 3 pot top | 5 wiper | 6 pot bottom |
+            //        4 out | 7 = grounded v+ (1R tie)
+            pedal::MnaTone n(7, fs_); n.Vsrc(1);
+            n.R(1, 2, 100e3);                                 // R22
+            n.R(2, 4, 100e3);                                 // R24 feedback
+            n.R(1, 3, 1.8e3);                                 // R21
+            n.R(3, 5, std::max(1.0 - treble_, 1e-3) * 10e3);  // Treble 10kB upper
+            n.R(5, 6, std::max(treble_, 1e-3) * 10e3);        // Treble 10kB lower
+            n.R(4, 6, 4.7e3);                                 // R23
+            n.Cap(5, 2, 3.9e-9);                              // C14 wiper -> inv
+            n.R(7, 0, 1.0);                                   // v+ tied to ground
+            n.Opamp(7, 2, 4);
+            n.compile(4); tone_ = n;
+        }
+    }
+    static constexpr double R11 = 15e3, C7 = 82e-9, R12 = 422e3, C8 = 390e-12;
+    static constexpr double R13 = 1e3, IS = 2e-6, NVT = 1.3 * 0.02585;   // 1N34A pair
+    static constexpr double R20 = 392e3, C13 = 820e-12, C15 = 4.7e-6;
+    double fs_, g_ = 0.5, treble_ = 0.5, level_ = 0.5;
+    bool built_ = false;
+    double lB0_ = 0, lB1_ = 0, lA1_ = 0, lX1_ = 0, lY1_ = 0;   // IC1B lower leg
+    double gA_ = 0, gB_ = 0, gX1_ = 0, gY1_ = 0;               // Zf one-pole
+    double vc_ = 0;                                             // clipper state
+    double fA_ = 0, fB_ = 0, fX1_ = 0, fY1_ = 0;               // R20||C13
+    double oA_ = 0, oB_ = 0, oX1_ = 0, oY1_ = 0;               // C15 HP
+    pedal::MnaTone netC_, netD_, tone_;
 };
 
 // ---- pedal presets -----------------------------------------------------------
@@ -212,15 +317,16 @@ public:
         tilt_.set(tone);
         // OD-1 has a fixed 884 Hz filter instead of a tone knob
         od1Filt_ = (kind == Kind::OD1);
-        if (kind_ == Kind::Klon) { klon_.setGain(drive); klon_.setTreble(tone); }
-        else if (whitebox_) buildTone(tone);
+        if (kind_ == Kind::Klon) {
+            klon_.setGain(drive); klon_.setTreble(tone); klon_.setLevel(level);
+        } else if (whitebox_) buildTone(tone);
         double wc = 2.0 * kPi * 14000.0, kk = 2.0 * fs;    // output-coupling top rolloff
         cpB_ = wc / (kk + wc); cpA_ = (wc - kk) / (kk + wc);
     }
     void setDrive(double d) {
         if (kind_ == Kind::Klon) klon_.setGain(d); else drive_.setDrive(d);
     }
-    void setLevel(double l) { level_ = l; }
+    void setLevel(double l) { level_ = l; if (kind_ == Kind::Klon) klon_.setLevel(l); }
     void setTone(double t) {
         if (kind_ == Kind::Klon) klon_.setTreble(t);
         else if (whitebox_) { if (t != lastTone_) { buildTone(t); lastTone_ = t; } }
@@ -232,7 +338,8 @@ public:
     // miss (they model pedal and amp separately). Gentle ~14 kHz one-pole.
     double coupled(double o) { cpY1_ = cpB_ * (o + cpX1_) - cpA_ * cpY1_; cpX1_ = o; return cpY1_; }
     double step(double x) {
-        if (kind_ == Kind::Klon) return coupled(hpOut_.step(klon_.step(x) * level_));
+        if (kind_ == Kind::Klon)   // level = the real 560R + 10kB pot inside KlonStage
+            return coupled(hpOut_.step(klon_.step(x)));
         double y = drive_.step(x);
         if (kind_ == Kind::MadRed) y = shuntClip(y);        // Dyna Red 2nd-stage 1N4001 shunt
         y = whitebox_ ? toneNet_.step(y) : tilt_.step(y);   // WB: real MNA tone

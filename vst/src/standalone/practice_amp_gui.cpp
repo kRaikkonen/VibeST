@@ -100,7 +100,9 @@ const Preset kPresets[] = {
     {L"Plexi Crunch",    1,0,0,false,false, 0.7,0.6,0.6,0.4,0.5,0.5,0.088, 0.5,0.5,0.5,0.5,0.5,0.5},
     {L"Recto Metal",     2,0,0,false,false, 0.8,0.4,0.9,0.4,0.4,0.3,0.088, 0.5,0.5,0.5,0.5,0.5,0.5},
     {L"Dumble Clean",    3,0,0,false,false, 0.3,0.75,0.9,0.1,0.6,0.3,0.088,0.5,0.5,0.5,0.5,0.5,0.5},
-    {L"Klon → Dumble",   3,6,0,true, false, 0.35,0.75,0.9,0.1,0.6,0.3,0.088,0.6,0.6,0.7,0.5,0.5,0.5},
+    // Klon level 0.2: the rebuilt Klon is a real boost now (+11 dB there); the old
+    // 0.7 was tuned against the broken quiet model and slams the ceiling.
+    {L"Klon → Dumble",   3,6,0,true, false, 0.35,0.75,0.9,0.1,0.6,0.3,0.088,0.6,0.6,0.2,0.5,0.5,0.5},
     {L"TS+SD → Recto",   2,3,1,true, true,  0.75,0.4,0.85,0.4,0.4,0.3,0.088,0.5,0.5,0.55,0.5,0.5,0.52},
     // Boot default: Mad Professor Red + Boss SD-1 -> Mesa Dual Rectifier (Modern).
     {L"Recto Metal Rig", 2,5,1,true, true,  0.80,0.75,0.56,0.51,0.59,0.30,0.088, 0.50,0.50,0.50,0.50,0.39,0.50},
