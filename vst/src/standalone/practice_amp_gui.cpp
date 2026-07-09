@@ -16,7 +16,7 @@
 namespace {
 
 // App title / version. Bump the last number on every feature update.
-constexpr const wchar_t* kAppTitle = L"VibeST Practice AMP  v0.1.2  by kRaikkonen";
+constexpr const wchar_t* kAppTitle = L"VibeST Practice AMP  v0.1.3  by kRaikkonen";
 constexpr int IDI_APPICON = 101;   // matches app.rc
 
 constexpr int IDC_IN = 100, IDC_OUT = 101, IDC_EXCL = 102, IDC_START = 103,

@@ -103,7 +103,11 @@ public:
         ot_.set(fs, 4500.0, 1.3);         // OT + presence resonance (fit)
         setDrive(drive);
     }
-    void setDrive(double d) { drive_ = 0.3 + 1.7 * std::clamp(d, 0.0, 1.0); }
+    // Drive = the SSS boost/push (FET boost + hitting V2 harder). Boost OFF is
+    // UNITY — it must not attenuate: clean level belongs to the Volume pot.
+    // (The old 0.3+1.7d mapping cut the signal to 0.3x at Drive=0 — a -10 dB hole
+    // with no physical source; that's why Dumble clean was so quiet.)
+    void setDrive(double d) { drive_ = 1.0 + 1.0 * std::clamp(d, 0.0, 1.0); }
     void setTone(double treble, double mid, double bass, double volume) {
         stack_.rebuild(fs_, treble, mid, bass, volume);
     }
